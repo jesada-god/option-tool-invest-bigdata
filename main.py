@@ -162,6 +162,7 @@ def get_price_bundle(ticker: str) -> dict:
     return {
         "current_price": round(float(current_price), 2),
         "close_price": round(float(last_close), 2),
+        "prev_close": round(float(prev_close), 2) if prev_close else round(float(last_close), 2),
         "pre_price": round(float(pre_price), 2) if pre_price else None,
         "post_price": round(float(post_price), 2) if post_price else None,
         "market_session": session,
@@ -540,6 +541,7 @@ def get_stats(ticker: str = "NVDA"):
         "ticker": ticker,
         "current_price": bundle["current_price"],
         "close_price": bundle["close_price"],
+        "prev_close": bundle["prev_close"],
         "pre_price": bundle["pre_price"],
         "post_price": bundle["post_price"],
         "market_session": bundle["market_session"],
