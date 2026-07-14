@@ -1,5 +1,5 @@
 # ---------------------------------------------------------------------------
-# 🎯 Smart Support / Resistance Engine (Multi-Factor, v1)
+# 🎯 Smart Support / Resistance Engine (Multi-Factor, v2)
 # ---------------------------------------------------------------------------
 # แทนที่ระบบ Pivot Point เดิม (High/Low/Close ของแท่งเดียว) ทั้งหมด
 # ด้วยระบบ "โซน" แนวรับ-แนวต้านที่วิเคราะห์จากหลายปัจจัยร่วมกัน:
@@ -9,7 +9,13 @@
 #   C. Psychological Levels-> เลขกลม (100/500/1000/10000 และ 00/25/50/75) ปรับค่าได้
 #   D. Orderbook Approx.   -> ไม่มี Order Book จริง จึงประมาณสภาพคล่องจาก Volume Profile
 #                              (Volume + Wick + Price Action)
-#   E. Composite Scoring   -> รวมคะแนนทุกปัจจัยเป็น Strength 0-100 ต่อโซน
+#   F. EMA Confluence      -> เส้น EMA20/50/100/200 ที่ราคาแตะ/สะท้อนซ้ำ = แนวรับ-ต้านแบบ
+#                              Dynamic ที่นักลงทุนสถาบัน/สาย Trend-following จับตาอยู่จริง
+#                              (สายยาว เช่น EMA100/200 มีน้ำหนักมากกว่าสายสั้น)
+#   E. Composite Scoring   -> v2: ใช้โมเดล "ปัจจัยเด่นสุด + โบนัสจากปัจจัยที่ยืนยันซ้ำ"
+#                              แทนการถ่วงน้ำหนักเฉลี่ยแบบเดิม เพราะแบบเดิมทำให้สัญญาณเดี่ยว
+#                              ที่แข็งแรงจริง (เช่น EMA200 หรือโดน Reject ซ้ำ 5-6 ครั้ง) ถูกฉุด
+#                              คะแนนลงจนกลายเป็น "Weak" เกือบทุกเส้น ทั้งที่ไม่ควรเป็นแบบนั้น
 #                              พร้อม Label ความมั่นใจ (High / Medium / Weak)
 # ---------------------------------------------------------------------------
 import math
@@ -215,6 +221,36 @@ def _volume_score_at(profile, price: float) -> float:
 
 
 # ---------------------------------------------------------------------------
+# F. EMA Confluence — เส้น EMA แบบ Dynamic S/R (สายยาวมีน้ำหนักมากกว่าสายสั้น)
+# ---------------------------------------------------------------------------
+EMA_PERIOD_WEIGHT = {20: 55.0, 50: 72.0, 100: 86.0, 200: 100.0}
+
+
+def compute_ema_values(df: pd.DataFrame) -> dict:
+    """คำนวณค่า EMA ล่าสุดของแต่ละคาบ (คำนวณครั้งเดียวใช้ซ้ำได้ทุกโซน)"""
+    closes = df["Close"]
+    values = {}
+    for period in EMA_PERIOD_WEIGHT:
+        if len(closes) < max(period // 2, 5):  # ข้อมูลน้อยเกินไปจน EMA ยาวๆ ไม่มีความหมาย
+            continue
+        values[period] = float(closes.ewm(span=period, adjust=False).mean().iloc[-1])
+    return values
+
+
+def ema_confluence_at(ema_values: dict, price: float, tolerance: float):
+    """หาเส้น EMA ที่ราคาปัจจุบันของโซนนี้ใกล้ที่สุด (ภายใน tolerance) แล้วให้คะแนนตามสาย
+    ถ้าตรงกับหลายเส้นพร้อมกัน (เช่น EMA50 ชนกับ EMA100) ยิ่งมีนัยสำคัญ จึงให้โบนัสเพิ่ม"""
+    matched = [p for p, v in ema_values.items() if abs(v - price) <= tolerance]
+    if not matched:
+        return 0.0, []
+    best_period = max(matched, key=lambda p: EMA_PERIOD_WEIGHT[p])
+    score = EMA_PERIOD_WEIGHT[best_period]
+    if len(matched) > 1:
+        score = min(score + 8.0 * (len(matched) - 1), 100.0)  # หลายเส้นซ้อนกัน = จุดรวมเทรนด์ (โบนัส)
+    return score, sorted(matched)
+
+
+# ---------------------------------------------------------------------------
 # E. รวมทุกปัจจัย + ให้คะแนน Strength 0-100 ต่อโซน
 # ---------------------------------------------------------------------------
 def compute_smart_levels(df: pd.DataFrame, current_price: float, atr: Optional[float],
@@ -228,9 +264,7 @@ def compute_smart_levels(df: pd.DataFrame, current_price: float, atr: Optional[f
     base_zones = detect_base_accumulation(df, atr)
     psych_levels = detect_psychological_levels(current_price, psych_step)
     vol_profile = build_volume_profile(df)
-
-    max_touch = max([c["count"] for c in (support_wick + resistance_wick)] or [1])
-    max_base_bars = max([z["bars"] for z in base_zones] or [1])
+    ema_values = compute_ema_values(df)
 
     candidates = []
     for c in support_wick:
@@ -244,7 +278,7 @@ def compute_smart_levels(df: pd.DataFrame, current_price: float, atr: Optional[f
         candidates.append({"price": z["mid"], "source": "base", "touches": 0,
                             "last_idx": z["last_idx"], "side": side, "base": z})
 
-    if not candidates and not psych_levels:
+    if not candidates and not psych_levels and not ema_values:
         return [], []
 
     # --- รวมกลุ่มราคาที่ใกล้กัน (wick + base) เข้าเป็นโซนเดียวกัน ---
@@ -264,7 +298,80 @@ def compute_smart_levels(df: pd.DataFrame, current_price: float, atr: Optional[f
                 used[jdx] = True
         merged_groups.append(group)
 
+    # --- โซนที่เกิดจาก EMA ล้วนๆ (ไม่มี Wick/Base ใกล้ๆ เลย) ก็ต้องถูกพิจารณาเป็นผู้สมัครด้วย
+    # เพราะ EMA200/EMA50 มักเป็นแนวรับ-ต้านที่แข็งแรงอยู่แล้วแม้จะยังไม่มี Wick มายืนยันซ้ำ
+    ema_only_prices = []
+    for period, val in ema_values.items():
+        if any(abs(val - c["price"]) <= tolerance for c in candidates):
+            continue
+        ema_only_prices.append(val)
+
     zones = []
+
+    def score_zone(price, touches, has_base, base_info, last_idx, side):
+        # --- ปัจจัยเด่น (Primary factors) — คิดแยกกัน ไม่บังคับให้ต้องมีครบทุกตัว ---
+        touch_score = min(touches, 6) / 6 * 100 if touches else 0.0  # 6 ครั้งขึ้นไป = เต็มสเกล (absolute ไม่ใช่ relative)
+        base_score = 0.0
+        if has_base:
+            bars_component = min(base_info["bars"], 12) / 12
+            base_score = (0.5 * bars_component + 0.5 * base_info["tightness"]) * 100
+        ema_score, matched_ema = ema_confluence_at(ema_values, price, tolerance)
+
+        primary_scores = {"touch": touch_score, "base": base_score, "ema": ema_score}
+        primary = max(primary_scores.values())
+
+        # --- ปัจจัยเสริม (Confirming factors) — ให้เป็น "โบนัส" ทับปัจจัยเด่น แทนการเฉลี่ยรวม ---
+        matched_psych = None
+        for pl in psych_levels:
+            if abs(pl["price"] - price) <= tolerance:
+                matched_psych = pl
+                break
+        psych_bonus = 0.0
+        if matched_psych:
+            psych_bonus = 16.0 if matched_psych["kind"] == "major" else 8.0
+
+        vol_score = _volume_score_at(vol_profile, price) * 100
+        vol_bonus = 0.0
+        if vol_profile is not None and vol_score >= 45:
+            vol_bonus = min((vol_score - 45) / 55 * 14, 14.0)
+
+        # ยิ่งมีปัจจัยหลักหลายตัว "ยืนยันซ้ำ" กันในโซนเดียวกัน (ไม่ใช่แค่ตัวที่แรงสุด) ยิ่งน่าเชื่อขึ้น
+        strong_supporters = sum(1 for v in primary_scores.values() if v >= 40)
+        confluence_bonus = max(strong_supporters - 1, 0) * 9.0
+
+        recency_factor = 0.85 + 0.15 * (last_idx / max(n - 1, 1)) if last_idx is not None else 0.9
+
+        raw = (primary + psych_bonus + vol_bonus + confluence_bonus) * recency_factor
+        strength = round(min(max(raw, 0.0), 100.0), 1)
+
+        if strength >= 75:
+            confidence = "High Confidence"
+        elif strength >= 45:
+            confidence = "Medium"
+        else:
+            confidence = "Weak"
+
+        reasons = []
+        if touches:
+            reasons.append(f"Wick Footprint: โดน Reject ซ้ำ {touches} ครั้ง")
+        if has_base:
+            zone_kind = "Demand Zone" if base_info["type"] == "demand" else "Supply Zone"
+            reasons.append(f"Base Accumulation: สะสมฐาน {base_info['bars']} แท่ง -> {zone_kind}")
+        if matched_ema:
+            ema_txt = ", ".join(f"EMA{p}" for p in matched_ema)
+            reasons.append(f"EMA Confluence: ใกล้เส้น {ema_txt} (แนวรับ-ต้านแบบ Dynamic ที่เทรนด์จับตา)")
+        if matched_psych:
+            kind_txt = "เลขกลมหลัก" if matched_psych["kind"] == "major" else "เลขกลมย่อย"
+            reasons.append(f"Psychological Level: {kind_txt} ${matched_psych['price']:.2f}")
+        if vol_profile is not None and vol_score >= 40:
+            reasons.append(f"Volume Profile: สภาพคล่องสูง (≈{vol_score:.0f}%)")
+        elif vol_profile is None:
+            reasons.append("Volume Profile: ไม่มีข้อมูล ใช้ Wick + Price Action ประมาณแทน")
+        if not reasons:
+            reasons.append("Price Action ทั่วไป (สัญญาณอ่อน)")
+
+        return strength, confidence, reasons
+
     for group in merged_groups:
         votes = {"support": 0, "resistance": 0}
         for g in group:
@@ -279,69 +386,11 @@ def compute_smart_levels(df: pd.DataFrame, current_price: float, atr: Optional[f
         last_idx = max(g.get("last_idx", 0) or 0 for g in group)
 
         zone_low = zone_high = None
+        base_info = base_group[0]["base"] if has_base else None
         if has_base:
-            zb = base_group[0]["base"]
-            zone_low, zone_high = zb["zone_low"], zb["zone_high"]
+            zone_low, zone_high = base_info["zone_low"], base_info["zone_high"]
 
-        # --- E. Scoring ---
-        touch_score = (min(touches / max(max_touch, 1), 1.0) * 100) if touches else 0.0
-        base_score = 0.0
-        if has_base:
-            zb = base_group[0]["base"]
-            base_score = (0.5 * min(zb["bars"] / max(max_base_bars, 1), 1.0) + 0.5 * zb["tightness"]) * 100
-
-        matched_psych = None
-        for pl in psych_levels:
-            if abs(pl["price"] - price) <= tolerance:
-                matched_psych = pl
-                break
-        psych_score = 0.0
-        if matched_psych:
-            psych_score = 100.0 if matched_psych["kind"] == "major" else 60.0
-
-        vol_score = _volume_score_at(vol_profile, price) * 100
-        recency_score = (last_idx / max(n - 1, 1)) * 100 if n > 1 else 50.0
-
-        weights = {"touch": 0.32, "base": 0.24, "vol": 0.18, "psych": 0.14, "recency": 0.12}
-        if touches == 0 and has_base:
-            weights["base"] += weights["touch"]
-            weights["touch"] = 0.0
-        if vol_profile is None:
-            redist = weights["vol"]
-            weights["vol"] = 0.0
-            weights["touch"] += redist * 0.5
-            weights["base"] += redist * 0.5
-
-        strength = (
-            touch_score * weights["touch"] + base_score * weights["base"] +
-            vol_score * weights["vol"] + psych_score * weights["psych"] +
-            recency_score * weights["recency"]
-        )
-        strength = round(min(max(strength, 0.0), 100.0), 1)
-
-        if strength >= 75:
-            confidence = "High Confidence"
-        elif strength >= 45:
-            confidence = "Medium"
-        else:
-            confidence = "Weak"
-
-        reasons = []
-        if touches:
-            reasons.append(f"Wick Footprint: โดน Reject ซ้ำ {touches} ครั้ง")
-        if has_base:
-            zb = base_group[0]["base"]
-            zone_kind = "Demand Zone" if zb["type"] == "demand" else "Supply Zone"
-            reasons.append(f"Base Accumulation: สะสมฐาน {zb['bars']} แท่ง -> {zone_kind}")
-        if matched_psych:
-            kind_txt = "เลขกลมหลัก" if matched_psych["kind"] == "major" else "เลขกลมย่อย"
-            reasons.append(f"Psychological Level: {kind_txt} ${matched_psych['price']:.2f}")
-        if vol_profile is not None and vol_score >= 40:
-            reasons.append(f"Volume Profile: สภาพคล่องสูง (≈{vol_score:.0f}%)")
-        elif vol_profile is None:
-            reasons.append("Volume Profile: ไม่มีข้อมูล ใช้ Wick + Price Action ประมาณแทน")
-        if not reasons:
-            reasons.append("Price Action ทั่วไป (สัญญาณอ่อน)")
+        strength, confidence, reasons = score_zone(price, touches, has_base, base_info, last_idx, side)
 
         zones.append({
             "price": round(float(price), 2),
@@ -353,7 +402,22 @@ def compute_smart_levels(df: pd.DataFrame, current_price: float, atr: Optional[f
             "zone_high": round(zone_high, 2) if zone_high is not None else None,
         })
 
-    # เติมเลขกลมที่ยังไม่มีการยืนยันจาก Wick/Base เข้าไปเป็นตัวเลือกสำรอง (คะแนนต่ำกว่า)
+    # --- โซนที่มาจาก EMA ล้วนๆ (ไม่มี Wick/Base ยืนยัน) ---
+    # เช่น EMA200/EMA50 บนกราฟ Week ที่ราคายังไม่เคยเทสต์ตรงๆ แต่ก็ยังเป็นแนวรับ-ต้าน Dynamic ที่มีนัยสำคัญ
+    for val in ema_only_prices:
+        side = "support" if val < current_price else "resistance"
+        strength, confidence, reasons = score_zone(val, 0, False, None, n - 1, side)
+        zones.append({
+            "price": round(float(val), 2),
+            "side": side,
+            "strength": strength,
+            "confidence": confidence,
+            "reasons": reasons,
+            "zone_low": None,
+            "zone_high": None,
+        })
+
+    # --- เติมเลขกลมที่ยังไม่มีการยืนยันจาก Wick/Base/EMA เข้าไปเป็นตัวเลือกสำรอง (คะแนนต่ำกว่า) ---
     existing_prices = [z["price"] for z in zones]
     for pl in psych_levels:
         if any(abs(pl["price"] - ep) <= tolerance for ep in existing_prices):
@@ -361,14 +425,14 @@ def compute_smart_levels(df: pd.DataFrame, current_price: float, atr: Optional[f
         if pl["price"] == current_price:
             continue
         side = "support" if pl["price"] < current_price else "resistance"
-        base_strength = 38.0 if pl["kind"] == "major" else 22.0
+        base_strength = 48.0 if pl["kind"] == "major" else 24.0
         kind_txt = "เลขกลมหลัก" if pl["kind"] == "major" else "เลขกลมย่อย"
         zones.append({
             "price": round(float(pl["price"]), 2),
             "side": side,
             "strength": base_strength,
             "confidence": "Medium" if base_strength >= 45 else "Weak",
-            "reasons": [f"Psychological Level: {kind_txt} ${pl['price']:.2f} (ยังไม่มี Wick/Base ยืนยัน)"],
+            "reasons": [f"Psychological Level: {kind_txt} ${pl['price']:.2f} (ยังไม่มี Wick/Base/EMA ยืนยัน)"],
             "zone_low": None,
             "zone_high": None,
         })
