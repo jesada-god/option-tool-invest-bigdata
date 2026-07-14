@@ -768,6 +768,110 @@
             font-size: 15px;
         }
 
+        .dashboard-overlay {
+            position: absolute;
+            bottom: 18px;
+            right: 18px;
+            width: 300px;
+            background: rgba(12, 13, 20, 0.94);
+            border: 1px solid rgba(255, 255, 255, 0.08);
+            border-radius: 18px;
+            padding: 14px;
+            z-index: 30;
+            box-shadow: 0 18px 42px rgba(0, 0, 0, 0.35);
+            backdrop-filter: blur(10px);
+            font-size: 13px;
+            line-height: 1.35;
+        }
+
+        .dashboard-overlay table {
+            width: 100%;
+            border-collapse: collapse;
+        }
+
+        .dashboard-overlay th,
+        .dashboard-overlay td {
+            padding: 8px 6px;
+            text-align: left;
+            vertical-align: top;
+        }
+
+        .dashboard-overlay th {
+            font-size: 12px;
+            font-weight: 700;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.4px;
+            padding-bottom: 10px;
+        }
+
+        .dashboard-overlay td {
+            color: white;
+        }
+
+        .dashboard-overlay .dashboard-value {
+            display: block;
+            font-weight: 700;
+        }
+
+        .dashboard-overlay .dashboard-value span {
+            display: block;
+            font-size: 11px;
+            color: var(--text-muted);
+            font-weight: 400;
+        }
+
+        .dashboard-overlay .dashboard-value.green {
+            color: var(--green);
+        }
+
+        .dashboard-overlay .dashboard-value.red {
+            color: var(--red);
+        }
+
+        .dashboard-overlay .dashboard-value.gold {
+            color: var(--gold);
+        }
+
+        .dashboard-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 8px;
+            color: var(--text-muted);
+        }
+
+        .dashboard-header span:first-child {
+            font-weight: 700;
+            color: white;
+        }
+
+        .dashboard-lookback input {
+            width: 60px;
+            border-radius: 8px;
+            border: 1px solid #2a2e39;
+            background: #0c0d14;
+            color: white;
+            padding: 5px 8px;
+            font-size: 12px;
+            text-align: right;
+        }
+
+        .dashboard-note {
+            margin-top: 10px;
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
+        .dashboard-flow-row td {
+            padding-top: 12px;
+        }
+
+        .dashboard-flow-row .dashboard-value {
+            min-width: 145px;
+        }
+
         .ai-panel {
             grid-column: 1 / -1;
             background: var(--panel-bg);
@@ -944,6 +1048,35 @@
         <div style="position:relative;">
             <div id="ema-legend" class="ema-legend"></div>
             <div id="tvchart"></div>
+            <div id="dashboard-overlay" class="dashboard-overlay">
+                <div class="dashboard-header">
+                    <span>Expected Move Dashboard</span>
+                    <span class="dashboard-lookback">Lookback <input id="dashboard-lookback" type="number" min="3" max="50" value="10"></span>
+                </div>
+                <table>
+                    <thead>
+                        <tr>
+                            <th>Metric</th>
+                            <th style="text-align:right;">Result</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        <tr>
+                            <td>Daily Bound</td>
+                            <td><span class="dashboard-value green" id="daily-move-range">-</span></td>
+                        </tr>
+                        <tr>
+                            <td>Weekly Bound</td>
+                            <td><span class="dashboard-value gold" id="weekly-move-range">-</span></td>
+                        </tr>
+                        <tr class="dashboard-flow-row">
+                            <td>Volume Imbalance</td>
+                            <td><span class="dashboard-value" id="volume-flow-text">-</span></td>
+                        </tr>
+                    </tbody>
+                </table>
+                <div class="dashboard-note" id="dashboard-note">อัปเดตเมื่อโหลดกราฟเสร็จ</div>
+            </div>
         </div>
         <div id="volumechart"></div>
     </div>
@@ -1007,13 +1140,6 @@
             <div id="full-gauges-grid" class="full-gauges-grid">
                 <div style="font-size:12px; color:var(--text-muted); padding:8px 0;">กำลังโหลดเกจทั้งหมด...</div>
             </div>
-        </div>
-        <div style="margin-top: 20px;">
-            <h3 style="margin:0; border-bottom:1px solid #242733; padding-bottom:10px; font-size:15px;">🤖 AI Prediction Engine</h3>
-            <div id="ai-prediction-probs" class="ai-prob-bar">
-                <div style="font-size:12px; color:var(--text-muted); padding:8px 0;">กำลังโหลด...</div>
-            </div>
-            <div id="ai-prediction-reasoning" style="margin-top:10px; font-size:12px;"></div>
         </div>
     </div>
 
@@ -1101,12 +1227,6 @@
         <button onclick="runAdvancedSimulator()" class="btn-submit" style="background:var(--gold); color:#0c0d14; font-weight:bold;">🚀 รัน Monte Carlo ทุก Scenario</button>
         <div id="advanced-sim-result" style="margin-top:15px;"></div>
     </div>
-
-    <div class="ai-panel" style="margin-top: 20px;">
-        <h3 style="margin:0 0 10px 0; color: var(--gold); font-size: 16px;">🤖 API Live Analysis</h3>
-        <div id="ai-text" class="ai-content" style="font-size: 14px; line-height: 1.5;">กำลังเชื่อมต่อ Backend...</div>
-    </div>
-
 
     <script>
         // --- ⚙️ State Management & Data Fetching ---
@@ -1646,18 +1766,14 @@ ${t}
                     volumeChart.timeScale().setVisibleLogicalRange(logicalRange);
                 }
                 requestAnimationFrame(syncPriceScaleWidths); // 🛠️ บังคับแกนราคาสองกราฟให้กว้างเท่ากันเป๊ะทุกครั้งที่โหลดข้อมูลใหม่
+                renderDashboardOverlay();
 
                 // 3. Fetch Indicators (S/R)
                 const indRes = await fetch(`/api/indicators?ticker=${currentTicker}&timeframe=${currentTimeframe}`);
                 srData = await indRes.json();
                 renderSRLadder();
 
-                // 4. Fetch Analysis
-                const aiRes = await fetch(`/api/analysis?ticker=${currentTicker}`);
-                const aiData = await aiRes.json();
-                document.getElementById('ai-text').innerText = aiData.summary;
-
-                // 5. Connect WebSocket & Fetch Portfolio
+                // 4. Connect WebSocket & Fetch Portfolio
                 if (currentMarketSession === "REGULAR") {
                     initWebSocket();
                 } else if (ws) {
@@ -1666,9 +1782,8 @@ ${t}
                 await fetchPortfolio();
                 setTimeout(resetChartView, 50);
 
-                // 6. Phase 5: Full Gauge Suite + AI Prediction Engine (non-blocking)
+                // 6. Phase 5: Full Gauge Suite (non-blocking)
                 loadFullGauges(currentTicker);
-                loadAIPrediction(currentTicker);
 
             } catch (err) {
                 console.error("Dashboard fetch error:", err);
@@ -2038,31 +2153,93 @@ ${t}
             }
         }
 
-        // --- 🤖 Phase 5: AI Prediction Engine ------------------------------
-        async function loadAIPrediction(ticker) {
-            const probEl = document.getElementById('ai-prediction-probs');
-            const reasonEl = document.getElementById('ai-prediction-reasoning');
-            try {
-                const res = await fetch(`/api/ai-prediction?ticker=${ticker}`);
-                const data = await res.json();
-                const p = data.prediction;
-
-                probEl.innerHTML = `
-                    <div class="ai-prob-segment" style="width:${p.bullish_probability}%; background:var(--green);">${p.bullish_probability > 8 ? p.bullish_probability + '%' : ''}</div>
-                    <div class="ai-prob-segment" style="width:${p.neutral_probability}%; background:var(--gold);">${p.neutral_probability > 8 ? p.neutral_probability + '%' : ''}</div>
-                    <div class="ai-prob-segment" style="width:${p.bearish_probability}%; background:var(--red);">${p.bearish_probability > 8 ? p.bearish_probability + '%' : ''}</div>
-                `;
-
-                reasonEl.innerHTML = `<div style="margin-bottom:6px; color:var(--text-muted);">Confidence: <strong style="color:white;">${p.confidence_score}%</strong> · ${p.factors_used}/${p.factors_total} factors available</div>` +
-                    p.weighted_reasoning.map(r => `<div class="ai-reason-row">
-                        <span>${r.factor.replace(/_/g,' ')} (${r.weight_pct}%)</span>
-                        <span style="color:${r.direction==='bullish'?'var(--green)':r.direction==='bearish'?'var(--red)':'var(--gold)'};">${r.score.toFixed(0)} · ${r.direction}</span>
-                    </div>`).join('');
-            } catch (err) {
-                console.error("AI prediction fetch error:", err);
-                probEl.innerHTML = `<div style="font-size:12px; color:var(--red);">โหลด AI Prediction ไม่สำเร็จ</div>`;
-            }
+        function getTimeframeSeconds(timeframe) {
+            const mapping = {
+                '1m': 60, '5m': 300, '10m': 600, '15m': 900,
+                '1h': 3600, '4h': 14400, '1d': 86400, 'week': 604800,
+            };
+            return mapping[timeframe] || 86400;
         }
+
+        function calculateExpectedMoves(data, price, lookback) {
+            if (!Array.isArray(data) || data.length < 3 || !price || lookback < 3) {
+                return null;
+            }
+            const bars = data.slice(-lookback);
+            const returns = [];
+            for (let i = 1; i < bars.length; i++) {
+                const prev = Number(bars[i - 1].close);
+                const curr = Number(bars[i].close);
+                if (prev > 0 && curr > 0) {
+                    returns.push(Math.log(curr / prev));
+                }
+            }
+            if (!returns.length) return null;
+            const mean = returns.reduce((sum, x) => sum + x, 0) / returns.length;
+            const variance = returns.reduce((sum, x) => sum + Math.pow(x - mean, 2), 0) / returns.length;
+            const sigma = Math.sqrt(variance);
+            const secondsPerBar = getTimeframeSeconds(currentTimeframe);
+            const dailyFactor = 86400 / secondsPerBar;
+            const dailyVol = sigma * Math.sqrt(Math.max(dailyFactor, 1));
+            const weeklyVol = sigma * Math.sqrt(Math.max(dailyFactor * 5, 5));
+            return {
+                dailyMovePct: dailyVol * 100,
+                weeklyMovePct: weeklyVol * 100,
+            };
+        }
+
+        function calculateVolumeFlow(data, lookback) {
+            const bars = Array.isArray(data) ? data.slice(-lookback) : [];
+            let upVol = 0;
+            let downVol = 0;
+            let neutralVol = 0;
+            for (const bar of bars) {
+                const vol = Number(bar.volume) || 0;
+                if (bar.close > bar.open) upVol += vol;
+                else if (bar.close < bar.open) downVol += vol;
+                else neutralVol += vol;
+            }
+            const total = upVol + downVol;
+            const bullish = total ? (upVol / total) * 100 : 50;
+            const bearish = total ? (downVol / total) * 100 : 50;
+            return { upVol, downVol, neutralVol, bullish, bearish, total };
+        }
+
+        function renderDashboardOverlay() {
+            const lookbackInput = document.getElementById('dashboard-lookback');
+            const lookback = Math.min(Math.max(Number(lookbackInput.value) || 10, 3), 50);
+            lookbackInput.value = lookback;
+            const dailyEl = document.getElementById('daily-move-range');
+            const weeklyEl = document.getElementById('weekly-move-range');
+            const flowEl = document.getElementById('volume-flow-text');
+            const noteEl = document.getElementById('dashboard-note');
+            const sourcePrice = currentLivePrice || (globalChartData.length ? globalChartData[globalChartData.length - 1].close : null);
+            if (!globalChartData.length || !sourcePrice) {
+                dailyEl.innerText = '-';
+                weeklyEl.innerText = '-';
+                flowEl.innerText = '-';
+                noteEl.innerText = 'รอข้อมูลกราฟหรือราคาปัจจุบัน...';
+                return;
+            }
+            const moves = calculateExpectedMoves(globalChartData, sourcePrice, lookback);
+            const flow = calculateVolumeFlow(globalChartData, lookback);
+            if (moves) {
+                const dailyLower = sourcePrice * (1 - moves.dailyMovePct / 100);
+                const dailyUpper = sourcePrice * (1 + moves.dailyMovePct / 100);
+                const weeklyLower = sourcePrice * (1 - moves.weeklyMovePct / 100);
+                const weeklyUpper = sourcePrice * (1 + moves.weeklyMovePct / 100);
+                dailyEl.innerHTML = `<span style="display:block; font-size:11px; color:var(--text-muted);">±${moves.dailyMovePct.toFixed(1)}%</span><strong>$${dailyLower.toFixed(2)} — $${dailyUpper.toFixed(2)}</strong>`;
+                weeklyEl.innerHTML = `<span style="display:block; font-size:11px; color:var(--text-muted);">±${moves.weeklyMovePct.toFixed(1)}%</span><strong>$${weeklyLower.toFixed(2)} — $${weeklyUpper.toFixed(2)}</strong>`;
+            } else {
+                dailyEl.innerText = 'ข้อมูลไม่พอ';
+                weeklyEl.innerText = 'ข้อมูลไม่พอ';
+            }
+            const bullishColor = flow.bullish >= flow.bearish ? 'var(--green)' : 'var(--red)';
+            flowEl.innerHTML = `<span style="display:block; font-size:11px; color:var(--text-muted);">Up ${flow.upVol.toLocaleString()} / Down ${flow.downVol.toLocaleString()}</span><strong style="color:${bullishColor};">Bullish ${flow.bullish.toFixed(0)}% / Bearish ${flow.bearish.toFixed(0)}%</strong>`;
+            noteEl.innerText = `Lookback ${lookback} bars · Volume imbalance over the latest ${lookback} bars.`;
+        }
+
+        document.getElementById('dashboard-lookback').addEventListener('change', renderDashboardOverlay);
 
         // --- 🚀 Phase 5: Advanced Multi-Scenario Monte Carlo Simulator -----
         let scenarioCount = 0;

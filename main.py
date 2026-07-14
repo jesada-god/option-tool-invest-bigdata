@@ -19,7 +19,6 @@ import pricing_engine as pe
 import stats_engine
 import portfolio_engine
 import gauges_engine
-import ai_engine
 from simulator_engine import ScenarioInput, run_multi_scenario
 from smart_sr_engine import compute_smart_levels
 
@@ -628,13 +627,6 @@ def get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
         })
     return data
 
-@app.get("/api/analysis")
-def get_analysis(ticker: str = "NVDA"):
-    return {
-        "summary": f"🤖 [AI Real-Time Evaluation: {ticker}]\nระบบประมวลผลแยกสาย Call Option และ Put Option เป็นอิสระเรียบร้อยแล้ว ดาต้าพร้อมเสิร์ฟบนเกจวัดความเสี่ยง"
-    }
-
-# ---------------------------------------------------------------------------
 # 👜 Smart Option Pocket Endpoints
 # ---------------------------------------------------------------------------
 @app.get("/api/positions")
@@ -836,48 +828,6 @@ def get_gauges(ticker: str = "NVDA", account_size: float = 100_000.0):
     )
     return {"ticker": ticker, "gauges": gauges, "portfolio_context": pg}
 
-
-@app.get("/api/ai-prediction")
-def get_ai_prediction(ticker: str = "NVDA"):
-    ticker = ticker.upper()
-    stats = stats_engine.analyze_key_statistics(ticker)
-    ratings = stats.get("ratings", {})
-    indicators = stats.get("indicators", {})
-
-    momentum = ratings.get("momentum_rating", {}).get("score")
-    trend = ratings.get("trend_rating", {}).get("score")
-    volatility = ratings.get("volatility_rating", {}).get("score")
-    technical = round(0.5 * momentum + 0.5 * trend, 1) if (momentum is not None and trend is not None) else None
-    risk = round(100 - volatility, 1) if volatility is not None else None
-
-    rel_vol = indicators.get("relative_volume")
-    volume_score = round(min(max(50 + (rel_vol - 1) * 30, 0), 100), 1) if rel_vol else None
-
-    ivrp = gauges_engine.iv_rank_percentile(stats.get("current_iv") or 0.30, stats.get("iv_history", []))
-    iv_score = ivrp.get("iv_rank")
-
-    ticker_positions = [p for p in logged_positions if p["ticker"].upper() == ticker]
-    pg = portfolio_engine.compute_portfolio_greeks(ticker_positions, get_underlying_price=get_base_price)
-    greeks_score = None
-    if pg["position_count"] > 0 and pg["net_delta"] is not None:
-        # positive net delta (net long calls / bullish skew) -> bullish signal
-        greeks_score = round(min(max(50 + pg["net_delta"] / 10.0, 0), 100), 1)
-
-    try:
-        spy_stats = stats_engine.analyze_key_statistics("SPY")
-        market_trend = spy_stats.get("ratings", {}).get("trend_rating", {}).get("score")
-    except Exception:
-        market_trend = None
-
-    factors = ai_engine.FactorInput(
-        technical=technical, greeks=greeks_score, iv=iv_score, volume=volume_score,
-        market_trend=market_trend, risk=risk,
-        notes={"iv": ivrp.get("reasons", [""])[0] if ivrp.get("reasons") else ""},
-        # fundamental, options_flow, sector_trend, macro, news_sentiment, correlation:
-        # intentionally left None — no data feed wired in for these yet
-    )
-    prediction = ai_engine.predict(factors)
-    return {"ticker": ticker, "prediction": prediction}
 
 
 class SimScenarioModel(BaseModel):
