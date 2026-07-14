@@ -782,6 +782,7 @@
             backdrop-filter: blur(10px);
             font-size: 13px;
             line-height: 1.35;
+            display: block;
         }
 
         .dashboard-overlay table {
@@ -1040,6 +1041,8 @@
                     style="border-color: var(--gold); color: var(--gold); background:none;">S/R</button>
                 <button onclick="resetChartView()"
                     style="border-color: var(--blue); color: #38bdf8; background:none;">🔄 รีเซ็ต</button>
+                <button id="toggle-dashboard" onclick="toggleExpectedMoveDashboard()"
+                    style="border-color: #38bdf8; color: #38bdf8; background:none;">📈 Dashboard ▾</button>
                 <button id="indicators-btn" onclick="toggleIndicatorsPanel()"
                     style="border-color: #a78bfa; color: #a78bfa; background:none;">📊 Indicators ▾</button>
                 <div id="indicators-panel" class="indicators-panel" style="display:none;"></div>
@@ -2153,6 +2156,21 @@ ${t}
             }
         }
 
+        let expectedMoveDashboardVisible = true;
+
+        function toggleExpectedMoveDashboard() {
+            expectedMoveDashboardVisible = !expectedMoveDashboardVisible;
+            const el = document.getElementById('dashboard-overlay');
+            const btn = document.getElementById('toggle-dashboard');
+            if (expectedMoveDashboardVisible) {
+                el.style.display = 'block';
+                btn.innerText = '📈 Dashboard ▾';
+            } else {
+                el.style.display = 'none';
+                btn.innerText = '📈 Dashboard ▸';
+            }
+        }
+
         function getTimeframeSeconds(timeframe) {
             const mapping = {
                 '1m': 60, '5m': 300, '10m': 600, '15m': 900,
@@ -2160,8 +2178,6 @@ ${t}
             };
             return mapping[timeframe] || 86400;
         }
-
-        function calculateExpectedMoves(data, price, lookback) {
             if (!Array.isArray(data) || data.length < 3 || !price || lookback < 3) {
                 return null;
             }
