@@ -1155,7 +1155,7 @@
         const chart = LightweightCharts.createChart(chartContainer, {
             layout: { textColor: '#cbd5e1', background: { type: 'solid', color: '#141722' } },
             grid: { vertLines: { color: '#1e2232' }, horzLines: { color: '#1e2232' } },
-            leftPriceScale: { visible: true, borderColor: '#242733', scaleMargins: { top: 0.12, bottom: 0.12 } },
+            leftPriceScale: { visible: false },
             rightPriceScale: { visible: true, borderColor: '#242733', scaleMargins: { top: 0.12, bottom: 0.12 } },
             timeScale: {
                 borderColor: '#242733',
@@ -1195,6 +1195,23 @@
             priceFormat: { type: 'volume' },
             priceScaleId: 'right',
         });
+
+        // --- 🛠️ [แก้บั๊ก] แท่งเทียนกับแท่งวอลุ่มยืนไม่ตรงกัน ---
+        // สาเหตุจริง: chart กับ volumeChart เป็นคนละ chart instance กัน แม้ time ของทุกแท่งจะตรงกัน 100%
+        // (มาจาก chartData ชุดเดียวกัน) แต่ "ความกว้างของแกนราคาขวา" ของแต่ละกราฟคำนวณเองอิสระ
+        // ตามความกว้างของตัวเลขที่แสดง (ราคาหุ้น เช่น "203.69" กับวอลุ่ม เช่น "95.35M" กว้างไม่เท่ากัน)
+        // เมื่อแกนราคากว้างไม่เท่ากัน พื้นที่วาดกราฟ (plot area) ของสองกราฟจะกว้างไม่เท่ากันไปด้วย
+        // ทำให้แท่งเทียนกับแท่งวอลุ่มเลื่อนหลุดแนวกันในแนวนอน ยิ่งเลื่อนกราฟไปทางซ้ายยิ่งเห็นชัด
+        // วิธีแก้: บังคับให้ minimumWidth ของแกนราคาขวาทั้งสองกราฟเท่ากันเป๊ะเสมอ (ใช้ค่าที่กว้างที่สุด)
+        function syncPriceScaleWidths() {
+            const mainWidth = chart.priceScale('right').width();
+            const volWidth = volumeChart.priceScale('right').width();
+            const target = Math.max(mainWidth, volWidth, 56);
+            if (target > 0) {
+                chart.priceScale('right').applyOptions({ minimumWidth: target });
+                volumeChart.priceScale('right').applyOptions({ minimumWidth: target });
+            }
+        }
 
         // --- 📈 EMA Indicator System (EMA 20 / 50 / 100 / 200) --------------
         const EMA_PERIODS = [20, 50, 100, 200];
@@ -1389,6 +1406,7 @@
         new ResizeObserver(() => {
             chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
             volumeChart.applyOptions({ width: volumeContainer.clientWidth, height: volumeContainer.clientHeight });
+            requestAnimationFrame(syncPriceScaleWidths);
         }).observe(chartContainer);
 
         function resetChartView() {
@@ -1586,12 +1604,13 @@ ${t}
                 candleSeries.setData(candles);
                 updateEMASeries(); // วาด/อัปเดตเส้น EMA ให้ตรงกับข้อมูลแท่งเทียนล่าสุด
                 volumeSeries.setData(volumes); // นำข้อมูลเข้าสู่หน้าอินดิเคเตอร์ตัวใหม่
-                
+
                 // 🔄 Sync volume chart timeScale กับ main chart เพื่อให้แท่งตรงกัน
                 const logicalRange = chart.timeScale().getVisibleLogicalRange();
                 if (logicalRange) {
                     volumeChart.timeScale().setVisibleLogicalRange(logicalRange);
                 }
+                requestAnimationFrame(syncPriceScaleWidths); // 🛠️ บังคับแกนราคาสองกราฟให้กว้างเท่ากันเป๊ะทุกครั้งที่โหลดข้อมูลใหม่
 
                 // 3. Fetch Indicators (S/R)
                 const indRes = await fetch(`/api/indicators?ticker=${currentTicker}&timeframe=${currentTimeframe}`);
@@ -1662,6 +1681,7 @@ ${t}
                     volumeChart.timeScale().setVisibleLogicalRange(savedRange);
                     isSyncing = false;
                 }
+                requestAnimationFrame(syncPriceScaleWidths); // 🛠️ บังคับแกนราคาสองกราฟให้กว้างเท่ากันเป๊ะ
             } catch (err) {
                 console.error("Chart refresh error:", err);
             } finally {

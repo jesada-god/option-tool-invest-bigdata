@@ -7,7 +7,7 @@ import random
 import json
 import requests
 import math
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta, timezone
 from typing import Optional, Literal
 from zoneinfo import ZoneInfo
 import yfinance as yf
@@ -369,16 +369,53 @@ BAR_SECONDS = {
     "1h": 3600, "4h": 14400, "1d": 86400, "week": 604800,
 }
 
+# ⏳ [ดึงข้อมูลย้อนหลังให้มากที่สุดเท่าที่ Yahoo Finance อนุญาต]
+# Yahoo บังคับเพดานตายตัวสำหรับข้อมูลแบบ intraday (ยิ่งขอเกินเพดาน ยิ่ง error ไม่ใช่แค่โดนตัด):
+#   - interval 1m      : ย้อนหลังได้สูงสุด ~7 วัน
+#   - interval 5m/15m   : ย้อนหลังได้สูงสุด ~60 วัน
+#   - interval 60m/1h   : ย้อนหลังได้สูงสุด ~730 วัน (~2 ปี)
+#   - interval 1d/1wk   : ไม่มีเพดาน ดึงได้ "max" ยาวไปจนถึงวันที่หุ้นเข้าตลาด (5 ปี+ แน่นอนสำหรับหุ้นส่วนใหญ่)
+# ใช้ "days" (คำนวณช่วง start/end เอง) แทน "period" แบบเดิม เพื่อชนเพดานของ Yahoo ให้พอดีที่สุด
+# (ระบบ period แบบสำเร็จรูปของ yfinance มีให้เลือกเป็นช่วงห่างๆ เช่น 1mo/3mo เท่านั้น ทำให้ได้ข้อมูลน้อยกว่าที่ Yahoo อนุญาตจริง)
 TIMEFRAME_CONFIG = {
-    "1m": {"period": "5d", "interval": "1m"},
-    "5m": {"period": "1mo", "interval": "5m"},
-    "10m": {"period": "1mo", "interval": "5m", "resample": "10min"},
-    "15m": {"period": "1mo", "interval": "15m"},
-    "1h": {"period": "3mo", "interval": "60m"},
-    "4h": {"period": "6mo", "interval": "60m", "resample": "4h"},
-    "1d": {"period": "1y", "interval": "1d"},
-    "week": {"period": "5y", "interval": "1wk"},
+    "1m": {"days": 6, "interval": "1m"},
+    "5m": {"days": 58, "interval": "5m"},
+    "10m": {"days": 58, "interval": "5m", "resample": "10min"},
+    "15m": {"days": 58, "interval": "15m"},
+    "1h": {"days": 728, "interval": "60m"},
+    "4h": {"days": 728, "interval": "60m", "resample": "4h"},
+    "1d": {"period": "max", "interval": "1d"},
+    "week": {"period": "max", "interval": "1wk"},
 }
+
+@ttl_cache(ttl_seconds=45)
+def get_raw_history(ticker: str, timeframe: str) -> pd.DataFrame:
+    """ดึงราคาย้อนหลังดิบจาก Yahoo Finance ตาม TIMEFRAME_CONFIG (ใช้ร่วมกันทั้ง chart-data และ ATR)
+    Cache สั้นๆ 45 วิ เพื่อกันไม่ให้ frontend ที่ auto-refresh กราฟทุก 15 วิ ยิงไปดึงข้อมูลย้อนหลัง
+    เป็นปีๆ ซ้ำจาก Yahoo รัวๆ ตลอดเวลา (ticker/timeframe ต่างกัน = แคชแยกกันอัตโนมัติ)
+    """
+    cfg = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["1d"])
+    stock = yf.Ticker(ticker)
+    try:
+        if "period" in cfg:
+            hist = stock.history(period=cfg["period"], interval=cfg["interval"], prepost=True)
+        else:
+            end = datetime.now(timezone.utc)
+            start = end - timedelta(days=cfg["days"])
+            hist = stock.history(start=start, end=end, interval=cfg["interval"], prepost=True)
+    except Exception:
+        return pd.DataFrame()
+
+    if hist is None or hist.empty:
+        return pd.DataFrame()
+
+    if cfg.get("resample"):
+        agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
+        if "Volume" in hist.columns:
+            agg["Volume"] = "sum"
+        hist = hist.resample(cfg["resample"]).agg(agg).dropna(subset=["Close"])
+
+    return hist
 
 def calculate_pivot_levels(h: float, l: float, c: float) -> dict:
     p = (h + l + c) / 3
@@ -431,20 +468,9 @@ def get_pivot_source_bar(ticker: str, is_week: bool):
 
 @ttl_cache(ttl_seconds=300)
 def get_atr_for_timeframe(ticker: str, timeframe: str, period: int = 14):
-    cfg = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["1d"])
-    stock = yf.Ticker(ticker)
-    try:
-        hist = stock.history(period=cfg["period"], interval=cfg["interval"], prepost=True)
-    except Exception:
-        return None
+    hist = get_raw_history(ticker, timeframe)
     if hist is None or hist.empty or len(hist) < period + 1:
         return None
-
-    if cfg.get("resample"):
-        agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
-        hist = hist.resample(cfg["resample"]).agg(agg).dropna(subset=["Close"])
-        if len(hist) < period + 1:
-            return None
 
     high, low, close = hist['High'], hist['Low'], hist['Close']
     prev_close = close.shift(1)
@@ -610,22 +636,12 @@ def get_indicators(ticker: str = "NVDA", timeframe: str = "1d"):
 @app.get("/api/chart-data")
 def get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
     cfg = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["1d"])
-    stock = yf.Ticker(ticker)
+    hist = get_raw_history(ticker, timeframe)
 
-    try:
-        hist = stock.history(period=cfg["period"], interval=cfg["interval"], prepost=True)
-    except Exception:
-        hist = pd.DataFrame()
-
-    if hist.empty:
+    if hist is None or hist.empty:
         return []
 
-    if cfg.get("resample"):
-        agg = {"Open": "first", "High": "max", "Low": "min", "Close": "last"}
-        if "Volume" in hist.columns:
-            agg["Volume"] = "sum"
-        hist = hist.resample(cfg["resample"]).agg(agg).dropna(subset=["Close"])
-
+    hist = hist.copy()
     hist['EMA20'] = hist['Close'].ewm(span=20, adjust=False).mean()
     hist['EMA50'] = hist['Close'].ewm(span=50, adjust=False).mean()
     hist['RSI'] = calculate_rsi(hist['Close'], 14)
