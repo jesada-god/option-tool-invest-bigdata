@@ -979,6 +979,33 @@
                 height: 100px;
             }
 
+            .dashboard-overlay {
+                position: static;
+                width: 100%;
+                margin-top: 12px;
+                box-shadow: none;
+                border-radius: 14px;
+                backdrop-filter: none;
+                padding: 14px;
+            }
+
+            .dashboard-overlay table {
+                width: 100%;
+            }
+
+            .dashboard-header {
+                flex-wrap: wrap;
+                gap: 8px;
+            }
+
+            .dashboard-lookback {
+                margin-top: 8px;
+            }
+
+            .dashboard-flow-row .dashboard-value {
+                min-width: 0;
+            }
+
             .side-panel {
                 flex-direction: column;
                 gap: 20px;
@@ -1051,7 +1078,7 @@
         <div style="position:relative;">
             <div id="ema-legend" class="ema-legend"></div>
             <div id="tvchart"></div>
-            <div id="dashboard-overlay" class="dashboard-overlay">
+            <div id="dashboard-overlay" class="dashboard-overlay" style="display:none;">
                 <div class="dashboard-header">
                     <span>Expected Move Dashboard</span>
                     <span class="dashboard-lookback">Lookback <input id="dashboard-lookback" type="number" min="3" max="50" value="10"></span>
@@ -2156,7 +2183,7 @@ ${t}
             }
         }
 
-        let expectedMoveDashboardVisible = true;
+        let expectedMoveDashboardVisible = false;
 
         function toggleExpectedMoveDashboard() {
             expectedMoveDashboardVisible = !expectedMoveDashboardVisible;
@@ -2178,6 +2205,8 @@ ${t}
             };
             return mapping[timeframe] || 86400;
         }
+
+        function calculateExpectedMoves(data, price, lookback) {
             if (!Array.isArray(data) || data.length < 3 || !price || lookback < 3) {
                 return null;
             }
