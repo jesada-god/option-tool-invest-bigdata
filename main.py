@@ -21,6 +21,7 @@ import portfolio_engine
 import gauges_engine
 import ai_engine
 from simulator_engine import ScenarioInput, run_multi_scenario
+from smart_sr_engine import compute_smart_levels
 
 app = FastAPI()
 
@@ -417,55 +418,6 @@ def get_raw_history(ticker: str, timeframe: str) -> pd.DataFrame:
 
     return hist
 
-def calculate_pivot_levels(h: float, l: float, c: float) -> dict:
-    p = (h + l + c) / 3
-    r1 = (2 * p) - l
-    s1 = (2 * p) - h
-    r2 = p + (h - l)
-    s2 = p - (h - l)
-    r3 = h + 2 * (p - l)
-    s3 = l - 2 * (h - p)
-    return {
-        "pivot": round(p, 2),
-        "resistance": [round(r1, 2), round(r2, 2), round(r3, 2)],
-        "support": [round(s1, 2), round(s2, 2), round(s3, 2)],
-    }
-
-@ttl_cache(ttl_seconds=300)
-def get_pivot_source_bar(ticker: str, is_week: bool):
-    stock = yf.Ticker(ticker)
-    try:
-        if is_week:
-            hist = stock.history(period="2y", interval="1wk")
-        else:
-            hist = stock.history(period="3mo", interval="1d")
-    except Exception:
-        return None
-
-    if hist is None or hist.empty:
-        return None
-
-    now_ny = datetime.now(ZoneInfo("America/New_York"))
-    last_ts = hist.index[-1]
-    try:
-        last_ts_ny = last_ts.tz_convert("America/New_York") if last_ts.tzinfo else last_ts
-    except Exception:
-        last_ts_ny = last_ts
-
-    if is_week:
-        same_period = last_ts_ny.isocalendar()[:2] == now_ny.isocalendar()[:2]
-    else:
-        same_period = last_ts_ny.date() == now_ny.date()
-
-    if same_period and len(hist) >= 2:
-        bar = hist.iloc[-2]
-    else:
-        bar = hist.iloc[-1]
-
-    if pd.isna(bar['High']) or pd.isna(bar['Low']) or pd.isna(bar['Close']):
-        return None
-    return bar
-
 @ttl_cache(ttl_seconds=300)
 def get_atr_for_timeframe(ticker: str, timeframe: str, period: int = 14):
     hist = get_raw_history(ticker, timeframe)
@@ -583,50 +535,61 @@ def get_stats(ticker: str = "NVDA"):
     }
 
 @app.get("/api/indicators")
-def get_indicators(ticker: str = "NVDA", timeframe: str = "1d"):
+def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Optional[float] = None):
+    """🎯 Smart Support/Resistance — วิเคราะห์จากหลายปัจจัยร่วมกัน (Wick Footprint,
+    Base Accumulation, Psychological Levels, Volume Profile) แล้วให้คะแนน Strength 0-100
+    ต่อโซน แทนที่ระบบ Pivot Point เดิมทั้งหมด
+    psych_step: ปรับระยะห่างของเลขกลมเองได้ (เช่น 100, 500, 1000, 10000) ถ้าไม่ระบุจะเลือกอัตโนมัติตามสเกลราคา
+    """
     current_price = get_base_price(ticker)
     is_week = (timeframe == "week")
-    basis = "week" if is_week else "1d"
+    basis = "week" if is_week else timeframe
 
-    bar = get_pivot_source_bar(ticker, is_week)
-    if bar is not None:
-        levels = calculate_pivot_levels(float(bar['High']), float(bar['Low']), float(bar['Close']))
-    else:
-        p = current_price
-        levels = {
-            "pivot": round(p, 2),
-            "resistance": [round(p * 1.02, 2), round(p * 1.04, 2), round(p * 1.06, 2)],
-            "support": [round(p * 0.98, 2), round(p * 0.96, 2), round(p * 0.94, 2)],
-        }
+    hist = get_raw_history(ticker, timeframe if timeframe in TIMEFRAME_CONFIG else "1d")
+    if hist is None or hist.empty:
+        hist = get_raw_history(ticker, "1d")
+        basis = "1d"
 
     atr = get_atr_for_timeframe(ticker, timeframe)
     bar_seconds = BAR_SECONDS.get(timeframe, 86400)
 
-    def build_level(price: float, kind: str, idx: int):
+    supports_raw, resistances_raw = compute_smart_levels(
+        hist, current_price, atr, psych_step=psych_step
+    )
+
+    def build_level(zone: dict, kind: str, idx: int):
+        price = zone["price"]
         distance = abs(price - current_price)
         distance_pct = round((distance / current_price) * 100, 2) if current_price else 0
         return {
             "label": f"{kind}{idx}",
-            "level": round(price, 2),
+            "level": price,
             "distance_pct": distance_pct,
             "eta": estimate_eta(distance, atr, bar_seconds),
+            "strength": zone["strength"],
+            "confidence": zone["confidence"],
+            "reasons": zone["reasons"],
+            "zone_low": zone.get("zone_low"),
+            "zone_high": zone.get("zone_high"),
         }
 
-    supports = [build_level(p, "S", i + 1) for i, p in enumerate(levels["support"])]
-    resistances = [build_level(p, "R", i + 1) for i, p in enumerate(levels["resistance"])]
+    supports = [build_level(z, "S", i + 1) for i, z in enumerate(supports_raw)]
+    resistances = [build_level(z, "R", i + 1) for i, z in enumerate(resistances_raw)]
 
     all_levels = supports + resistances
     closest = min(all_levels, key=lambda x: x["distance_pct"]) if all_levels else None
+    strongest = max(all_levels, key=lambda x: x["strength"]) if all_levels else None
 
     return {
         "ticker": ticker,
         "current_price": round(current_price, 2),
         "timeframe_requested": timeframe,
         "basis_timeframe": basis,
-        "pivot": levels["pivot"],
+        "engine": "smart_sr_v1",
         "support": supports,
         "resistance": resistances,
         "closest_alert": closest,
+        "strongest_zone": strongest,
         "s1": supports[0]["level"] if len(supports) > 0 else None,
         "s2": supports[1]["level"] if len(supports) > 1 else None,
         "r1": resistances[0]["level"] if len(resistances) > 0 else None,

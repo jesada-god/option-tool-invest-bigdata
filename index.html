@@ -396,6 +396,27 @@
             background: rgba(240, 185, 11, 0.08);
         }
 
+        .sr-row .sr-main {
+            display: flex;
+            flex-direction: column;
+            gap: 2px;
+            flex: 1;
+        }
+
+        .sr-row .sr-zone-range {
+            font-size: 9.5px;
+            color: var(--text-muted);
+        }
+
+        .sr-strength-badge {
+            font-size: 9px;
+            font-weight: bold;
+            padding: 2px 6px;
+            border-radius: 4px;
+            white-space: nowrap;
+            flex-shrink: 0;
+        }
+
         .sr-row .sr-label {
             font-weight: bold;
             width: 26px;
@@ -1459,21 +1480,35 @@ ${t}
             el.innerHTML = `$${fairValue.toFixed(2)} <span style="font-size:11px; color:${color};">(${sign}${upsidePct}%)</span>`;
         }
 
+        function srConfidenceColor(confidence) {
+            if (confidence === 'High Confidence') return 'var(--green)';
+            if (confidence === 'Medium') return 'var(--gold)';
+            return 'var(--text-muted)';
+        }
+
         function renderSRLadder() {
             const banner = document.getElementById('sr-alert-banner');
             const ladder = document.getElementById('sr-ladder');
             const basisLabel = document.getElementById('sr-basis-label');
             if (!srData) { ladder.innerHTML = ''; banner.style.display = 'none'; return; }
 
-            basisLabel.innerText = srData.basis_timeframe === 'week' ? 'อ้างอิง Week' : 'อ้างอิง D1';
+            basisLabel.innerText = srData.basis_timeframe === 'week' ? 'อ้างอิง Week' : `อ้างอิง ${srData.basis_timeframe}`;
 
             const rowHtml = (item, type) => {
                 const near = item.distance_pct !== null && item.distance_pct !== undefined && item.distance_pct <= 1.5;
                 const labelColor = type === 'resistance' ? 'var(--red)' : 'var(--green)';
-                return `<div class="sr-row ${type} ${near ? 'near' : ''}">
+                const zoneRange = (item.zone_low && item.zone_high)
+                    ? `<div class="sr-zone-range">โซน $${item.zone_low.toFixed(2)} - $${item.zone_high.toFixed(2)}</div>` : '';
+                const reasons = (item.reasons || []).join(' | ').replace(/"/g, '&quot;');
+                const confColor = srConfidenceColor(item.confidence);
+                const strengthTxt = (item.strength !== null && item.strength !== undefined) ? `${item.strength}%` : 'N/A';
+                return `<div class="sr-row ${type} ${near ? 'near' : ''}" title="${reasons}">
 <span class="sr-label" style="color:${labelColor}">${item.label}</span>
-<span class="sr-price">$${item.level.toFixed(2)}</span>
-<span class="sr-eta">${item.distance_pct}%${item.eta ? ' · ' + item.eta : ''}</span>
+<div class="sr-main">
+    <span class="sr-price">$${item.level.toFixed(2)} <span class="sr-eta">${item.distance_pct}%${item.eta ? ' · ' + item.eta : ''}</span></span>
+    ${zoneRange}
+</div>
+<span class="sr-strength-badge" style="background:${confColor}22; color:${confColor};">${strengthTxt} · ${item.confidence || ''}</span>
 </div>`;
             };
 
@@ -1491,7 +1526,7 @@ ${t}
                 banner.style.display = 'block';
                 banner.style.background = isRes ? 'rgba(255,59,48,0.12)' : 'rgba(0,197,127,0.12)';
                 banner.style.color = isRes ? 'var(--red)' : 'var(--green)';
-                banner.innerText = `🔔 ใกล้ถึง ${c.label} ที่ $${c.level.toFixed(2)} (ห่าง ${c.distance_pct}%)${c.eta ? ' · คาดว่าอีกประมาณ ' + c.eta : ''}`;
+                banner.innerText = `🔔 ใกล้ถึง ${c.label} ที่ $${c.level.toFixed(2)} (ห่าง ${c.distance_pct}%, Strength ${c.strength}% · ${c.confidence})${c.eta ? ' · คาดว่าอีกประมาณ ' + c.eta : ''}`;
             } else {
                 banner.style.display = 'none';
             }
@@ -1720,8 +1755,8 @@ ${t}
                 const widths = [4, 3, 3];
                 const f = (p, c, w, t) => candleSeries.createPriceLine({ price: p, color: c, lineWidth: w, lineStyle: LightweightCharts.LineStyle.Solid, title: t });
 
-                srData.resistance.forEach((r, i) => srLines.push(f(r.level, resColors[i] || '#ff3b30', widths[i] || 3, `${r.label} แนวต้าน`)));
-                srData.support.forEach((s, i) => srLines.push(f(s.level, supColors[i] || '#00c57f', widths[i] || 3, `${s.label} แนวรับ`)));
+                srData.resistance.forEach((r, i) => srLines.push(f(r.level, resColors[i] || '#ff3b30', widths[i] || 3, `${r.label} แนวต้าน (${r.strength}% ${r.confidence})`)));
+                srData.support.forEach((s, i) => srLines.push(f(s.level, supColors[i] || '#00c57f', widths[i] || 3, `${s.label} แนวรับ (${s.strength}% ${s.confidence})`)));
 
                 isSRVisible = true; document.getElementById('toggle-sr').classList.add('active');
             }
@@ -1983,7 +2018,9 @@ ${t}
                     const g = gauges[key];
                     if (!g) return '';
                     const score = g.score;
-                    const display = score === null || score === undefined ? 'N/A' : (Number.isInteger(score) ? score : score.toFixed(1));
+                    // ⛔ ไม่มีข้อมูล (N/A) -> ไม่ต้องแสดงการ์ดนี้ ตัดออกไปเลยกันรก
+                    if (score === null || score === undefined) return '';
+                    const display = Number.isInteger(score) ? score : score.toFixed(1);
                     const reasons = (g.reasons || []).join(' | ').replace(/"/g, '&quot;');
                     return `<div class="mini-gauge" title="${reasons}">
                         <div class="mg-label">${label}</div>
@@ -1991,6 +2028,10 @@ ${t}
                         <div class="mg-tag" style="background:${gaugeColor(score)}22; color:${gaugeColor(score)};">${g.label || ''}</div>
                     </div>`;
                 }).join('');
+
+                if (!grid.innerHTML.trim()) {
+                    grid.innerHTML = `<div style="grid-column: 1 / -1; font-size:12px; color:var(--text-muted);">ยังไม่มีข้อมูลเกจสำหรับหุ้นตัวนี้</div>`;
+                }
             } catch (err) {
                 console.error("Gauges fetch error:", err);
                 grid.innerHTML = `<div style="font-size:12px; color:var(--red);">โหลดเกจไม่สำเร็จ</div>`;
