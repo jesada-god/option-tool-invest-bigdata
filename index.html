@@ -768,7 +768,7 @@
             </div>
             <div class="market-session-badge session-CLOSED" id="session-badge">-</div>
             <div class="extended-hours">
-                <div>Post: <span id="post-price" style="color: var(--blue);">-</span></div>
+                <div>Post: <span id="post-price" style="color: var(--blue);">-</span> <span class="price-change" id="post-change" style="font-size:12px;">-</span></div>
             </div>
         </div>
     </div>
@@ -970,6 +970,8 @@
         let activePositions = [];
         let isChangingData = false;
         let currentLivePrice = 0;
+        let currentPrevClose = 0;
+        let currentClosePrice = 0;
         let watchlist = [];
         let ws = null;
         let searchDebounce = null;
@@ -1181,6 +1183,41 @@ ${t}
             renderSRLadder();
         }
 
+        function updatePriceChangeDisplay() {
+            // ราคาหลัก: เทียบกับราคาปิดวันก่อนหน้า
+            const changeEl = document.getElementById('price-change');
+            if (changeEl) {
+                if (currentPrevClose > 0) {
+                    const diff = currentLivePrice - currentPrevClose;
+                    const pct = (diff / currentPrevClose) * 100;
+                    const sign = diff >= 0 ? '+' : '';
+                    changeEl.innerText = `${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+                    changeEl.className = `price-change ${diff >= 0 ? 'up' : 'down'}`;
+                } else {
+                    changeEl.innerText = '-';
+                    changeEl.className = 'price-change';
+                }
+            }
+
+            // ราคา Post-Market: เทียบกับราคาปิดตลาดปกติของวันนั้น
+            const postChangeEl = document.getElementById('post-change');
+            const postPriceEl = document.getElementById('post-price');
+            if (postChangeEl && postPriceEl) {
+                const postPriceText = postPriceEl.innerText;
+                const postPrice = parseFloat(postPriceText.replace('$', ''));
+                if (currentClosePrice > 0 && !isNaN(postPrice)) {
+                    const diff = postPrice - currentClosePrice;
+                    const pct = (diff / currentClosePrice) * 100;
+                    const sign = diff >= 0 ? '+' : '';
+                    postChangeEl.innerText = `${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
+                    postChangeEl.className = `price-change ${diff >= 0 ? 'up' : 'down'}`;
+                } else {
+                    postChangeEl.innerText = '-';
+                    postChangeEl.className = 'price-change';
+                }
+            }
+        }
+
         async function fetchDashboardData() {
             isChangingData = true;
             document.getElementById('stats-title').innerText = `${currentTicker} Key Statistics`;
@@ -1194,19 +1231,9 @@ ${t}
 
                 document.getElementById('live-price').innerText = `$${currentLivePrice.toFixed(2)}`;
 
-                // ส่วนต่าง +/- เทียบราคาปิดวันก่อนหน้า (เขียว = บวก, แดง = ลบ)
-                const changeEl = document.getElementById('price-change');
-                const prevClose = stats.prev_close;
-                if (prevClose && prevClose > 0) {
-                    const diff = currentLivePrice - prevClose;
-                    const pct = (diff / prevClose) * 100;
-                    const sign = diff >= 0 ? '+' : '';
-                    changeEl.innerText = `${sign}${diff.toFixed(2)} (${sign}${pct.toFixed(2)}%)`;
-                    changeEl.className = `price-change ${diff >= 0 ? 'up' : 'down'}`;
-                } else {
-                    changeEl.innerText = '-';
-                    changeEl.className = 'price-change';
-                }
+                // เก็บราคาปิดวันก่อนหน้า/ราคาปิดปกติไว้ใช้คำนวณ % แบบ real-time
+                currentPrevClose = stats.prev_close || 0;
+                currentClosePrice = stats.close_price || 0;
 
                 document.getElementById('stat-pe').innerText = stats.pe_ratio;
                 setFairValueDisplay(stats.fair_value, stats.fair_value_upside_pct);
@@ -1222,6 +1249,9 @@ ${t}
                 badge.innerText = sessionLabels[currentMarketSession] || currentMarketSession;
                 badge.className = `market-session-badge session-${currentMarketSession}`;
                 document.getElementById('post-price').innerText = stats.post_price ? `$${stats.post_price.toFixed(2)}` : '-';
+
+                // ตอนนี้ live-price และ post-price ถูกตั้งค่าแล้ว จึงคำนวณ % ได้
+                updatePriceChangeDisplay();
 
                 // Call/Put gauges
                 document.getElementById('call-score-val').innerText = `${stats.call_score}/100`;
@@ -1413,6 +1443,9 @@ ${t}
                     priceDisplay.innerText = `$${currentLivePrice.toFixed(2)}`;
                     priceDisplay.style.color = currentLivePrice >= lastPrice ? 'var(--green)' : 'var(--red)';
                 }
+
+                // ราคาขยับ -> คำนวณ % ใหม่ทุกครั้ง
+                updatePriceChangeDisplay();
 
                 recomputeSRDistances(currentLivePrice);
 
