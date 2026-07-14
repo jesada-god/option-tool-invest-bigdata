@@ -226,6 +226,79 @@
             line-height: 1.3;
         }
 
+        .indicators-panel {
+            position: absolute;
+            top: 40px;
+            right: 0;
+            z-index: 50;
+            background: #1c2030;
+            border: 1px solid var(--panel-border);
+            border-radius: 8px;
+            padding: 12px;
+            width: 300px;
+            box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+        }
+
+        .indicators-panel-title {
+            font-size: 12px;
+            font-weight: bold;
+            color: #a78bfa;
+            margin-bottom: 8px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+        }
+
+        .ema-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 6px 0;
+            border-bottom: 1px solid #242733;
+        }
+
+        .ema-row:last-child {
+            border-bottom: none;
+        }
+
+        .ema-row label {
+            font-size: 13px;
+            color: white;
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            flex: 1;
+            cursor: pointer;
+        }
+
+        .ema-row input[type="color"] {
+            width: 26px;
+            height: 26px;
+            border: none;
+            border-radius: 4px;
+            background: none;
+            padding: 0;
+            cursor: pointer;
+        }
+
+        .ema-row select {
+            background: #2a2e39;
+            border: 1px solid #434651;
+            color: white;
+            border-radius: 4px;
+            font-size: 11px;
+            padding: 3px;
+        }
+
+        .ema-row .ema-dash-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 3px;
+            flex: none;
+            width: auto;
+        }
+
         .extended-hours span {
             font-weight: bold;
             font-family: monospace;
@@ -787,11 +860,14 @@
                 <button class="active" onclick="changeTimeframe('1d', this)">1D</button>
                 <button onclick="changeTimeframe('week', this)">Week</button>
             </div>
-            <div class="btn-group">
+            <div class="btn-group" style="position:relative;">
                 <button id="toggle-sr" onclick="toggleSupportResistance()"
                     style="border-color: var(--gold); color: var(--gold); background:none;">S/R</button>
                 <button onclick="resetChartView()"
                     style="border-color: var(--blue); color: #38bdf8; background:none;">🔄 รีเซ็ต</button>
+                <button id="indicators-btn" onclick="toggleIndicatorsPanel()"
+                    style="border-color: #a78bfa; color: #a78bfa; background:none;">📊 Indicators ▾</button>
+                <div id="indicators-panel" class="indicators-panel" style="display:none;"></div>
             </div>
         </div>
         <div id="tvchart"></div>
@@ -1066,6 +1142,129 @@
             priceScaleId: 'right',
         });
 
+        // --- 📈 EMA Indicator System (EMA 20 / 50 / 100 / 200) --------------
+        const EMA_PERIODS = [20, 50, 100, 200];
+        const EMA_DEFAULTS = {
+            20: { enabled: false, color: '#f0b90b', width: 2, dashed: false }, // ทอง
+            50: { enabled: false, color: '#2962ff', width: 2, dashed: false }, // น้ำเงิน
+            100: { enabled: false, color: '#ba68c8', width: 2, dashed: false }, // ม่วง
+            200: { enabled: false, color: '#ff3b30', width: 2, dashed: false }, // แดง
+        };
+
+        function loadEmaSettings() {
+            try {
+                const saved = JSON.parse(localStorage.getItem('emaSettings') || 'null');
+                if (saved) {
+                    const merged = {};
+                    EMA_PERIODS.forEach(p => { merged[p] = { ...EMA_DEFAULTS[p], ...(saved[p] || {}) }; });
+                    return merged;
+                }
+            } catch (e) { /* ignore corrupted storage */ }
+            return JSON.parse(JSON.stringify(EMA_DEFAULTS));
+        }
+
+        function saveEmaSettings() {
+            try { localStorage.setItem('emaSettings', JSON.stringify(emaSettings)); } catch (e) { /* storage full/unavailable */ }
+        }
+
+        let emaSettings = loadEmaSettings();
+        const emaSeriesMap = { 20: null, 50: null, 100: null, 200: null };
+
+        // คำนวณ EMA จากแท่งเทียน (seed ด้วยค่าเฉลี่ย SMA ของ N แท่งแรกเหมือน TradingView)
+        function calculateEMA(candles, period) {
+            if (!candles || candles.length < period) return [];
+            const k = 2 / (period + 1);
+            const result = [];
+            let sum = 0;
+            for (let i = 0; i < period; i++) sum += candles[i].close;
+            let ema = sum / period;
+            result.push({ time: candles[period - 1].time, value: ema });
+            for (let i = period; i < candles.length; i++) {
+                ema = candles[i].close * k + ema * (1 - k);
+                result.push({ time: candles[i].time, value: ema });
+            }
+            return result;
+        }
+
+        // สร้าง/อัปเดต/ลบ เส้น EMA บนกราฟหลักตามค่า emaSettings ปัจจุบัน
+        function updateEMASeries() {
+            EMA_PERIODS.forEach(period => {
+                const cfg = emaSettings[period];
+                if (cfg.enabled) {
+                    if (!emaSeriesMap[period]) {
+                        emaSeriesMap[period] = chart.addLineSeries({
+                            color: cfg.color,
+                            lineWidth: cfg.width,
+                            lineStyle: cfg.dashed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
+                            priceLineVisible: false,
+                            lastValueVisible: false,
+                            crosshairMarkerVisible: false,
+                            title: `EMA ${period}`,
+                        });
+                    } else {
+                        emaSeriesMap[period].applyOptions({
+                            color: cfg.color,
+                            lineWidth: cfg.width,
+                            lineStyle: cfg.dashed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
+                        });
+                    }
+                    emaSeriesMap[period].setData(calculateEMA(globalChartData, period));
+                } else if (emaSeriesMap[period]) {
+                    chart.removeSeries(emaSeriesMap[period]);
+                    emaSeriesMap[period] = null;
+                }
+            });
+        }
+
+        function toggleIndicatorsPanel() {
+            const panel = document.getElementById('indicators-panel');
+            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+        }
+
+        // ปิด panel เมื่อคลิกนอกพื้นที่
+        document.addEventListener('click', function (e) {
+            const panel = document.getElementById('indicators-panel');
+            const btn = document.getElementById('indicators-btn');
+            if (panel && panel.style.display === 'block' && !panel.contains(e.target) && e.target !== btn) {
+                panel.style.display = 'none';
+            }
+        });
+
+        function renderIndicatorsPanel() {
+            const panel = document.getElementById('indicators-panel');
+            panel.innerHTML = `<div class="indicators-panel-title">📈 EMA (Exponential Moving Average)</div>` +
+                EMA_PERIODS.map(period => {
+                    const cfg = emaSettings[period];
+                    return `
+                    <div class="ema-row" data-period="${period}">
+                        <label>
+                            <input type="checkbox" class="ema-toggle" ${cfg.enabled ? 'checked' : ''}
+                                onchange="onEmaChange(${period}, 'enabled', this.checked)">
+                            EMA ${period}
+                        </label>
+                        <input type="color" value="${cfg.color}" title="เปลี่ยนสี"
+                            onchange="onEmaChange(${period}, 'color', this.value)">
+                        <select title="ความหนาเส้น" onchange="onEmaChange(${period}, 'width', parseInt(this.value))">
+                            <option value="1" ${cfg.width === 1 ? 'selected' : ''}>บาง</option>
+                            <option value="2" ${cfg.width === 2 ? 'selected' : ''}>ปกติ</option>
+                            <option value="3" ${cfg.width === 3 ? 'selected' : ''}>หนา</option>
+                            <option value="4" ${cfg.width === 4 ? 'selected' : ''}>หนามาก</option>
+                        </select>
+                        <label class="ema-dash-label" title="เส้นประ">
+                            <input type="checkbox" class="ema-dash" ${cfg.dashed ? 'checked' : ''}
+                                onchange="onEmaChange(${period}, 'dashed', this.checked)">
+                            ประ
+                        </label>
+                    </div>`;
+                }).join('');
+        }
+
+        function onEmaChange(period, key, value) {
+            emaSettings[period][key] = value;
+            saveEmaSettings();
+            updateEMASeries();
+        }
+
         // --- 🔄 ระบบซิงค์กราฟหลักและกราฟ Volume ด้วย LogicalRange ---
         let isSyncing = false;
 
@@ -1274,6 +1473,7 @@ ${t}
                 }));
 
                 candleSeries.setData(candles);
+                updateEMASeries(); // วาด/อัปเดตเส้น EMA ให้ตรงกับข้อมูลแท่งเทียนล่าสุด
                 volumeSeries.setData(volumes); // นำข้อมูลเข้าสู่หน้าอินดิเคเตอร์ตัวใหม่
                 
                 // 🔄 Sync volume chart timeScale กับ main chart เพื่อให้แท่งตรงกัน
@@ -1455,6 +1655,7 @@ ${t}
                     if (currentLivePrice > lastData.high) lastData.high = currentLivePrice;
                     if (currentLivePrice < lastData.low) lastData.low = currentLivePrice;
                     candleSeries.update(lastData);
+                    updateEMASeries(); // ราคาแท่งล่าสุดขยับ -> เส้น EMA ต้องขยับตาม
                 }
 
                 // อัปเดตราคา P&L แบบ Real-time
@@ -1773,6 +1974,7 @@ ${t}
         }
 
         async function bootTerminal() {
+            renderIndicatorsPanel();
             addScenarioCard();
             await fetchWatchlist();
             await fetchDashboardData();
