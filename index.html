@@ -226,6 +226,56 @@
             line-height: 1.3;
         }
 
+        .ema-legend {
+            position: absolute;
+            top: 8px;
+            left: 12px;
+            z-index: 20;
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            pointer-events: none;
+        }
+
+        .ema-legend-item {
+            display: flex;
+            align-items: center;
+            gap: 5px;
+            background: rgba(20, 23, 34, 0.75);
+            padding: 3px 8px;
+            border-radius: 4px;
+            font-size: 12px;
+            font-family: monospace;
+            font-weight: bold;
+            color: white;
+        }
+
+        .ema-legend-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            flex-shrink: 0;
+        }
+
+        .ema-master-row {
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            padding-bottom: 8px;
+            margin-bottom: 8px;
+            border-bottom: 1px solid #434651;
+            font-weight: bold;
+            color: white;
+            font-size: 13px;
+            cursor: pointer;
+        }
+
+        .ema-master-row input {
+            width: 16px;
+            height: 16px;
+            cursor: pointer;
+        }
+
         .indicators-panel {
             position: absolute;
             top: 40px;
@@ -870,7 +920,10 @@
                 <div id="indicators-panel" class="indicators-panel" style="display:none;"></div>
             </div>
         </div>
-        <div id="tvchart"></div>
+        <div style="position:relative;">
+            <div id="ema-legend" class="ema-legend"></div>
+            <div id="tvchart"></div>
+        </div>
         <div id="volumechart"></div>
     </div>
 
@@ -1129,6 +1182,7 @@
                 borderColor: '#242733',
                 timeVisible: true,
                 rightOffset: 50,
+                barSpacing: 9, // 🛠️ [แก้บั๊ก] ต้องเท่ากับกราฟหลักเป๊ะ ไม่งั้นแท่ง Volume จะกว้าง/แคบไม่ตรงกับแท่งเทียน
                 fixLeftEdge: false,
                 fixRightEdge: false
             },
@@ -1167,8 +1221,19 @@
             try { localStorage.setItem('emaSettings', JSON.stringify(emaSettings)); } catch (e) { /* storage full/unavailable */ }
         }
 
+        // ปุ่มหลัก "เปิดใช้งาน EMA" — กดครั้งแรกให้ขึ้นทุกเส้นทันที ไม่ต้องเลือกทีละเส้น
+        // ผู้ใช้ค่อยไปติ๊กเอาเส้นที่ไม่ต้องการออกทีหลังได้จากรายการด้านล่าง
+        function loadEmaMaster() {
+            try { return localStorage.getItem('emaMasterEnabled') === 'true'; } catch (e) { return false; }
+        }
+        function saveEmaMaster() {
+            try { localStorage.setItem('emaMasterEnabled', String(emaMasterEnabled)); } catch (e) { /* storage full/unavailable */ }
+        }
+
         let emaSettings = loadEmaSettings();
+        let emaMasterEnabled = loadEmaMaster();
         const emaSeriesMap = { 20: null, 50: null, 100: null, 200: null };
+        const emaLastValue = { 20: null, 50: null, 100: null, 200: null }; // เก็บราคาล่าสุดของแต่ละเส้นไว้โชว์บน legend
 
         // คำนวณ EMA จากแท่งเทียน (seed ด้วยค่าเฉลี่ย SMA ของ N แท่งแรกเหมือน TradingView)
         function calculateEMA(candles, period) {
@@ -1186,7 +1251,7 @@
             return result;
         }
 
-        // สร้าง/อัปเดต/ลบ เส้น EMA บนกราฟหลักตามค่า emaSettings ปัจจุบัน
+        // สร้าง/อัปเดต/ลบ เส้น EMA บนกราฟหลักตามค่า emaSettings ปัจจุบัน + อัปเดต legend ราคาล่าสุด
         function updateEMASeries() {
             EMA_PERIODS.forEach(period => {
                 const cfg = emaSettings[period];
@@ -1197,7 +1262,7 @@
                             lineWidth: cfg.width,
                             lineStyle: cfg.dashed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
                             priceLineVisible: false,
-                            lastValueVisible: false,
+                            lastValueVisible: true, // โชว์ป้ายราคาล่าสุดของเส้นนี้ที่ขอบขวากราฟด้วย
                             crosshairMarkerVisible: false,
                             title: `EMA ${period}`,
                         });
@@ -1208,12 +1273,32 @@
                             lineStyle: cfg.dashed ? LightweightCharts.LineStyle.Dashed : LightweightCharts.LineStyle.Solid,
                         });
                     }
-                    emaSeriesMap[period].setData(calculateEMA(globalChartData, period));
+                    const data = calculateEMA(globalChartData, period);
+                    emaSeriesMap[period].setData(data);
+                    emaLastValue[period] = data.length ? data[data.length - 1].value : null;
                 } else if (emaSeriesMap[period]) {
                     chart.removeSeries(emaSeriesMap[period]);
                     emaSeriesMap[period] = null;
+                    emaLastValue[period] = null;
+                } else {
+                    emaLastValue[period] = null;
                 }
             });
+            updateEmaLegend();
+        }
+
+        // แสดงกล่องเล็กๆ มุมซ้ายบนกราฟ บอกว่าแต่ละเส้น EMA ตอนนี้อยู่ที่ราคาเท่าไหร่ (อัปเดต real-time)
+        function updateEmaLegend() {
+            const legend = document.getElementById('ema-legend');
+            if (!legend) return;
+            const items = EMA_PERIODS
+                .filter(p => emaSettings[p].enabled && emaLastValue[p] !== null)
+                .map(p => `<div class="ema-legend-item">
+                        <span class="ema-legend-dot" style="background:${emaSettings[p].color};"></span>
+                        EMA${p}: $${emaLastValue[p].toFixed(2)}
+                    </div>`)
+                .join('');
+            legend.innerHTML = items;
         }
 
         function toggleIndicatorsPanel() {
@@ -1232,7 +1317,13 @@
 
         function renderIndicatorsPanel() {
             const panel = document.getElementById('indicators-panel');
-            panel.innerHTML = `<div class="indicators-panel-title">📈 EMA (Exponential Moving Average)</div>` +
+            panel.innerHTML = `
+                <label class="ema-master-row">
+                    <input type="checkbox" id="ema-master-toggle" ${emaMasterEnabled ? 'checked' : ''}
+                        onchange="onEmaMasterToggle(this.checked)">
+                    ✅ เปิดใช้งาน EMA (แสดงทุกเส้นทันที)
+                </label>
+                <div class="indicators-panel-title">📈 EMA (Exponential Moving Average)</div>` +
                 EMA_PERIODS.map(period => {
                     const cfg = emaSettings[period];
                     return `
@@ -1256,7 +1347,18 @@
                             ประ
                         </label>
                     </div>`;
-                }).join('');
+                }).join('') +
+                `<div class="field-hint" style="margin-top:8px;">ติ๊กออกเฉพาะเส้นที่ไม่ต้องการได้เลย ไม่จำเป็นต้องปิดปุ่มด้านบน</div>`;
+        }
+
+        // ปุ่มหลัก: เปิด = ให้ครบทุกเส้นทันที / ปิด = ซ่อนทุกเส้นทันที
+        function onEmaMasterToggle(checked) {
+            emaMasterEnabled = checked;
+            saveEmaMaster();
+            EMA_PERIODS.forEach(p => { emaSettings[p].enabled = checked; });
+            saveEmaSettings();
+            renderIndicatorsPanel(); // รีเฟรช checkbox ย่อยให้ตรงกับสถานะใหม่
+            updateEMASeries();
         }
 
         function onEmaChange(period, key, value) {
@@ -1294,8 +1396,17 @@
                 chart.priceScale('right').applyOptions({ autoScale: true });
                 chart.priceScale('left').applyOptions({ autoScale: true });
                 volumeChart.priceScale('right').applyOptions({ autoScale: true });
+
+                // 🛠️ [แก้บั๊ก] ห้ามสั่ง scrollToRealTime() แยกกันทั้ง 2 กราฟ เพราะแต่ละกราฟจะคำนวณ
+                // ตำแหน่ง real-time ของตัวเองใหม่ (คนละค่ากัน) แล้วทำให้ Volume หลุด sync จากราคา
+                // ให้เลื่อนกราฟราคาไป real-time ก่อน แล้ว "บังคับ" ให้กราฟ Volume ใช้ช่วงเดียวกันเป๊ะ
+                isSyncing = true;
                 chart.timeScale().scrollToRealTime();
-                volumeChart.timeScale().scrollToRealTime();
+                const realtimeRange = chart.timeScale().getVisibleLogicalRange();
+                if (realtimeRange) {
+                    volumeChart.timeScale().setVisibleLogicalRange(realtimeRange);
+                }
+                isSyncing = false;
             }
         }
 
@@ -1514,6 +1625,55 @@ ${t}
 
         function switchStock(ticker) { currentTicker = ticker; removeSRLines(); fetchDashboardData(); renderWatchlist(); }
         function searchStock() { const input = document.getElementById('search-input').value.toUpperCase().trim(); if (!input) return; currentTicker = input; removeSRLines(); fetchDashboardData(); renderWatchlist(); }
+
+        // 🛠️ [แก้บั๊ก] เดิม Volume ของแท่งล่าสุดจะค้างอยู่ค่าตอนโหลดหน้าครั้งแรกตลอด เพราะ
+        // WebSocket ส่งมาแค่ "ราคา" ไม่มี "วอลลุ่ม" เลย ฟังก์ชันนี้จะดึงแท่งเทียน+วอลลุ่มชุดล่าสุด
+        // มาแทนที่เป็นระยะ เพื่อให้ Volume ตรงกับแท่งราคาจริงเสมอ โดยไม่รบกวนตำแหน่งที่ผู้ใช้กำลังดูอยู่
+        // (setData แทนที่ทั้งชุดทุกครั้ง จึงไม่มีแท่งซ้อนหรือช่องว่างผิดปกติ เพราะ time เดียวกันจะถูกอัปเดตทับ ไม่ใช่เพิ่มใหม่)
+        let isRefreshingChart = false;
+        async function refreshChartOnly() {
+            if (isChangingData || isRefreshingChart) return; // อย่าชนกับการโหลดข้อมูลเต็มรูปแบบ (เปลี่ยนหุ้น/timeframe)
+            isRefreshingChart = true;
+            try {
+                const chartRes = await fetch(`/api/chart-data?ticker=${currentTicker}&timeframe=${currentTimeframe}`);
+                const chartData = await chartRes.json();
+                if (!chartData || chartData.length === 0) return;
+                globalChartData = chartData;
+
+                const candles = chartData.map(d => ({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }));
+                // ⭐ Candle และ Volume มาจาก chartData ชุดเดียวกันเป๊ะ ใช้ d.time เดียวกันทั้งคู่
+                // จึงการันตีว่าแท่ง Volume จะตรงกับแท่งเทียนทุกแท่งเสมอ
+                const volumes = chartData.map(d => ({
+                    time: d.time,
+                    value: d.volume,
+                    color: d.close >= d.open ? '#00c57f' : '#ff3b30'
+                }));
+
+                // จำตำแหน่งที่ผู้ใช้กำลังดูอยู่ไว้ก่อน ไม่ให้กราฟกระตุกไปที่ real-time ทุกครั้งที่รีเฟรชเบื้องหลัง
+                const savedRange = chart.timeScale().getVisibleLogicalRange();
+
+                candleSeries.setData(candles);
+                volumeSeries.setData(volumes);
+                updateEMASeries();
+
+                if (savedRange) {
+                    isSyncing = true;
+                    chart.timeScale().setVisibleLogicalRange(savedRange);
+                    volumeChart.timeScale().setVisibleLogicalRange(savedRange);
+                    isSyncing = false;
+                }
+            } catch (err) {
+                console.error("Chart refresh error:", err);
+            } finally {
+                isRefreshingChart = false;
+            }
+        }
+
+        let chartRefreshTimer = null;
+        function startChartAutoRefresh() {
+            if (chartRefreshTimer) clearInterval(chartRefreshTimer);
+            chartRefreshTimer = setInterval(refreshChartOnly, 15000); // รีเฟรชแท่งเทียน+วอลลุ่มทุก 15 วิ
+        }
 
         async function addCurrentToWatchlist() {
             await fetch(`/api/watchlist?ticker=${currentTicker}`, { method: 'POST' });
@@ -1978,6 +2138,7 @@ ${t}
             addScenarioCard();
             await fetchWatchlist();
             await fetchDashboardData();
+            startChartAutoRefresh();
         }
 
         bootTerminal();
