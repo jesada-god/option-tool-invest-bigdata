@@ -1,5 +1,4 @@
 from fastapi import FastAPI, WebSocket, HTTPException, Query
-import os
 from fastapi.responses import FileResponse
 from fastapi.encoders import jsonable_encoder
 from pydantic import BaseModel
@@ -976,9 +975,5 @@ def cache_clear():
 
 
 if __name__ == "__main__":
-    # When running on hosting platforms (Render, Heroku, etc.) the port
-    # is provided via the PORT environment variable. Fall back to 8000 for
-    # local development.
     import uvicorn
-    port = int(os.environ.get("PORT") or 8000)
-    uvicorn.run(app, host="0.0.0.0", port=port)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

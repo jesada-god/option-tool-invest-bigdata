@@ -1813,7 +1813,16 @@ ${t}
                     const text = await chartRes.text();
                     throw new Error(`Chart-data request failed: ${chartRes.status} ${chartRes.statusText} - ${text.slice(0, 250)}`);
                 }
-                const chartData = await chartRes.json();
+                let chartData;
+                try {
+                    chartData = await chartRes.json();
+                } catch (parseErr) {
+                    const text = await chartRes.text();
+                    throw new Error(`Chart-data JSON parse failed: ${parseErr.message} - ${text.slice(0, 250)}`);
+                }
+                if (!Array.isArray(chartData) || chartData.length === 0) {
+                    throw new Error('Chart-data response empty or invalid');
+                }
                 globalChartData = chartData;
 
                 const candles = chartData.map(d => ({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }));
@@ -1878,8 +1887,13 @@ ${t}
             isRefreshingChart = true;
             try {
                 const chartRes = await fetch(`/api/chart-data?ticker=${currentTicker}&timeframe=${currentTimeframe}`);
+                if (!chartRes.ok) {
+                    const text = await chartRes.text();
+                    console.error(`Chart refresh failed: ${chartRes.status} ${chartRes.statusText} -`, text.slice(0, 250));
+                    return;
+                }
                 const chartData = await chartRes.json();
-                if (!chartData || chartData.length === 0) return;
+                if (!Array.isArray(chartData) || chartData.length === 0) return;
                 globalChartData = chartData;
 
                 const candles = chartData.map(d => ({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }));
@@ -1947,21 +1961,18 @@ ${t}
                 const isMobile = window.innerWidth <= 768;
                 const allowedMobile = new Set(['R1','R2','R3','S1','S2','S3']);
 
-                let resToShow = Array.isArray(srData.resistance) ? srData.resistance.slice() : [];
-                let supToShow = Array.isArray(srData.support) ? srData.support.slice() : [];
+                const filterFn = (it) => {
+                    if (!it || !it.label) return false;
+                    const token = String(it.label).trim().split(/\s|[:\-]/)[0];
+                    return allowedMobile.has(token);
+                };
 
-                if (isMobile) {
-                    // Filter to only allowed labels on mobile
-                    const filterFn = (it) => {
-                        if (!it || !it.label) return false;
-                        // Normalize label (take first token like 'R1' or 'S2')
-                        const token = String(it.label).trim().split(/\s|[:\-]/)[0];
-                        return allowedMobile.has(token);
-                    };
-                    // Keep original ordering but only allowed ones
-                    resToShow = resToShow.filter(filterFn);
-                    supToShow = supToShow.filter(filterFn);
-                }
+                const resToShow = isMobile
+                    ? (Array.isArray(srData.resistance) ? srData.resistance.filter(filterFn) : [])
+                    : (Array.isArray(srData.resistance) ? srData.resistance.slice() : []);
+                const supToShow = isMobile
+                    ? (Array.isArray(srData.support) ? srData.support.filter(filterFn) : [])
+                    : (Array.isArray(srData.support) ? srData.support.slice() : []);
 
                 resToShow.forEach((r, i) => srLines.push(f(r.level, resColors[i] || '#ff3b30', widths[i] || 3, `${r.label} แนวต้าน (${r.strength}% ${r.confidence})`)));
                 supToShow.forEach((s, i) => srLines.push(f(s.level, supColors[i] || '#00c57f', widths[i] || 3, `${s.label} แนวรับ (${s.strength}% ${s.confidence})`)));
