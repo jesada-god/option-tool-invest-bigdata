@@ -2602,11 +2602,23 @@ def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Opti
         hist = get_raw_history(ticker, "1d")
         basis = "1d"
     if hist is None or hist.empty or "Close" not in hist.columns:
-        raise HTTPException(status_code=503, detail="Historical market data is temporarily unavailable for this ticker.")
+        return {
+            "ticker": ticker, "current_price": None,
+            "timeframe_requested": requested_timeframe, "basis_timeframe": basis,
+            "engine": "smart_sr_v1", "status": "unavailable",
+            "support": [], "resistance": [], "closest_alert": None,
+            "strongest_zone": None, "s1": None, "s2": None, "r1": None, "r2": None,
+        }
 
     closes = hist["Close"].dropna()
     if closes.empty or not _is_valid_price(closes.iloc[-1]):
-        raise HTTPException(status_code=503, detail="A usable market price is temporarily unavailable for this ticker.")
+        return {
+            "ticker": ticker, "current_price": None,
+            "timeframe_requested": requested_timeframe, "basis_timeframe": basis,
+            "engine": "smart_sr_v1", "status": "unavailable",
+            "support": [], "resistance": [], "closest_alert": None,
+            "strongest_zone": None, "s1": None, "s2": None, "r1": None, "r2": None,
+        }
     try:
         current_price = get_base_price(ticker)
     except Exception as exc:
@@ -2926,14 +2938,40 @@ def get_company_snapshot(ticker: str = "NVDA"):
         raise HTTPException(status_code=503, detail="Company information is temporarily unavailable.") from exc
 
 
+def _news_published_datetime(value: Any) -> Optional[datetime]:
+    """Normalize the provider's mixed publication date formats to UTC."""
+    if isinstance(value, datetime):
+        return value.replace(tzinfo=timezone.utc) if value.tzinfo is None else value.astimezone(timezone.utc)
+    if isinstance(value, (int, float)):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (TypeError, ValueError, OverflowError):
+            return None
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            return parsed.replace(tzinfo=timezone.utc) if parsed.tzinfo is None else parsed.astimezone(timezone.utc)
+        except ValueError:
+            return None
+    return None
+
+
 @app.get("/api/news")
 @ttl_cache(ttl_seconds=120)
-def get_stock_news(ticker: str = "NVDA", limit: int = Query(8, ge=1, le=20)):
-    """Return a compact, sanitized provider news feed without exposing raw payloads."""
+def get_stock_news(ticker: str = "NVDA", limit: int = Query(5, ge=1, le=5)):
+    """Return up to five recent, ticker-relevant provider headlines.
+
+    Yahoo's ticker feed is used as the source, then items are restricted to the
+    previous 90 days, deduplicated, and checked against related tickers when
+    the provider supplies them. We do not fabricate an editorial importance
+    score that the provider does not expose.
+    """
     ticker = normalize_ticker(ticker)
     try:
         raw_items = yf.Ticker(ticker).news or []
         items = []
+        seen_titles: set[str] = set()
+        cutoff = datetime.now(timezone.utc) - timedelta(days=90)
         for raw in raw_items:
             raw_item = raw if isinstance(raw, dict) else {}
             content = raw_item.get("content", raw_item)
@@ -2942,6 +2980,20 @@ def get_stock_news(ticker: str = "NVDA", limit: int = Query(8, ge=1, le=20)):
             title = content.get("title") or raw_item.get("title")
             if not title:
                 continue
+            published = _news_published_datetime(content.get("pubDate") or raw_item.get("providerPublishTime"))
+            if published is None or published < cutoff:
+                continue
+            related = content.get("relatedTickers") or raw_item.get("relatedTickers") or []
+            if isinstance(related, str):
+                related = [related]
+            if related:
+                related_symbols = {str(item).upper().strip() for item in related}
+                if ticker not in related_symbols:
+                    continue
+            normalized_title = str(title).strip().casefold()
+            if normalized_title in seen_titles:
+                continue
+            seen_titles.add(normalized_title)
             provider = content.get("provider", {})
             canonical = content.get("canonicalUrl", {})
             link = canonical.get("url") if isinstance(canonical, dict) else raw_item.get("link")
@@ -2949,10 +3001,10 @@ def get_stock_news(ticker: str = "NVDA", limit: int = Query(8, ge=1, le=20)):
                 "title": str(title)[:300],
                 "publisher": provider.get("displayName") if isinstance(provider, dict) else raw_item.get("publisher"),
                 "link": link if isinstance(link, str) and link.startswith(("https://", "http://")) else None,
-                "published_at": content.get("pubDate") or raw_item.get("providerPublishTime"),
+                "published_at": published.isoformat(),
             })
-            if len(items) >= limit:
-                break
+        items.sort(key=lambda item: item["published_at"], reverse=True)
+        items = items[:limit]
         return {"ticker": ticker, "items": items}
     except Exception as exc:
         logger.exception("News snapshot failed for %s", ticker)

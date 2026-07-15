@@ -13,6 +13,9 @@
         let currentClosePrice = 0;
         let watchlist = [];
         let favoriteTickers = new Set();
+        // Guest activity is intentionally memory-only: no LocalStorage and no
+        // cross-device claim until cloud authentication is configured.
+        let sessionRecentViewed = [];
         let ws = null;
         let wsReconnectTimer = null;
         let wsReconnectAttempts = 0;
@@ -253,7 +256,7 @@
             workspace.classList.add('is-open');
             const ticker = currentTicker;
             const requestVersion = ++stockWorkspaceRequestVersion;
-            workspace.innerHTML = `<h3>${escapeHtml(ticker)} · ${escapeHtml(tab)}</h3><p class="pt-empty-copy">Loading provider-backed analysis…</p>`;
+            workspace.innerHTML = `<h3>${escapeHtml(ticker)}</h3><p class="pt-empty-copy">${escapeHtml(analysisText('loading', 'Loading provider-backed analysis…'))}</p>`;
             workspace.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             try {
                 if (tab === 'company') {
@@ -262,8 +265,9 @@
                     const data = await response.json();
                     if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
                     const website = data.website && /^https?:\/\//.test(data.website) ? new URL(data.website).hostname : '—';
-                    const metrics = [['Sector', data.sector], ['Industry', data.industry], ['Exchange', data.exchange], ['Employees', Number.isFinite(Number(data.employees)) ? Number(data.employees).toLocaleString() : '—'], ['Market cap', Number.isFinite(Number(data.market_cap)) ? `$${(Number(data.market_cap) / 1e9).toFixed(1)}B` : '—'], ['Website', website]];
-                    workspace.innerHTML = `<h3>${escapeHtml(data.name || ticker)}</h3><p>${escapeHtml(data.summary || 'Company overview is not available from the configured market-data provider.')}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value))).join('')}</div>`;
+                    const metrics = [[analysisText('sector', 'Sector'), data.sector], [analysisText('industry', 'Industry'), data.industry], [analysisText('exchange', 'Exchange'), data.exchange], [analysisText('employees', 'Employees'), Number.isFinite(Number(data.employees)) ? Number(data.employees).toLocaleString() : '—'], [analysisText('market_cap', 'Market cap'), Number.isFinite(Number(data.market_cap)) ? `$${(Number(data.market_cap) / 1e9).toFixed(1)}B` : '—'], [analysisText('website', 'Website'), website]];
+                    const sourceSummary = userPreferences.language === 'th' && data.summary ? `<details class="pt-empty-copy" style="margin-top:12px;"><summary>${escapeHtml(analysisText('company_source', 'Full provider description (original language)'))}</summary><p>${escapeHtml(data.summary)}</p></details>` : '';
+                    workspace.innerHTML = `<h3>${escapeHtml(data.name || ticker)}</h3><p>${escapeHtml(localizedCompanySummary(data))}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value))).join('')}</div>${sourceSummary}`;
                     return;
                 }
                 if (tab === 'financial') {
@@ -271,17 +275,20 @@
                     if (!companyResponse.ok || !statsResponse.ok) throw new Error('Financial data is unavailable.');
                     const [company, stats] = await Promise.all([companyResponse.json(), statsResponse.json()]);
                     if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
-                    const metrics = [['Trailing P/E', company.trailing_pe], ['Forward P/E', company.forward_pe], ['Revenue', Number.isFinite(Number(company.revenue)) ? `$${(Number(company.revenue) / 1e9).toFixed(2)}B` : '—'], ['Profit margin', Number.isFinite(Number(company.profit_margin)) ? `${(Number(company.profit_margin) * 100).toFixed(2)}%` : '—'], ['Dividend yield', Number.isFinite(Number(company.dividend_yield)) ? `${(Number(company.dividend_yield) * 100).toFixed(2)}%` : '—'], ['Fair value', stats.fair_value ? `$${Number(stats.fair_value).toFixed(2)}` : '—']];
-                    workspace.innerHTML = `<h3>${escapeHtml(ticker)} financial snapshot</h3><p>Provider-reported fields may be unavailable for some instruments. Values are not accounting advice.</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? '—'))).join('')}</div>`;
+                    const metrics = [[analysisText('trailing_pe', 'Trailing P/E'), company.trailing_pe], [analysisText('forward_pe', 'Forward P/E'), company.forward_pe], [analysisText('revenue', 'Revenue'), Number.isFinite(Number(company.revenue)) ? `$${(Number(company.revenue) / 1e9).toFixed(2)}B` : '—'], [analysisText('profit_margin', 'Profit margin'), Number.isFinite(Number(company.profit_margin)) ? `${(Number(company.profit_margin) * 100).toFixed(2)}%` : '—'], [analysisText('dividend_yield', 'Dividend yield'), Number.isFinite(Number(company.dividend_yield)) ? `${(Number(company.dividend_yield) * 100).toFixed(2)}%` : '—'], [analysisText('fair_value', 'Fair value'), stats.fair_value ? `$${Number(stats.fair_value).toFixed(2)}` : '—']];
+                    const heading = userPreferences.language === 'th' ? `ภาพรวมข้อมูลการเงิน ${ticker}` : `${ticker} financial snapshot`;
+                    workspace.innerHTML = `<h3>${escapeHtml(heading)}</h3><p>${escapeHtml(analysisText('financial_note', 'Provider-reported fields may be unavailable for some instruments. Values are not accounting advice.'))}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? '—'))).join('')}</div>`;
                     return;
                 }
                 if (tab === 'news') {
-                    const response = await fetch(`/api/news?ticker=${encodeURIComponent(ticker)}`, { cache: 'no-store' });
+                    const response = await fetch(`/api/news?ticker=${encodeURIComponent(ticker)}&limit=5`, { cache: 'no-store' });
                     if (!response.ok) throw new Error('News is unavailable.');
                     const data = await response.json();
                     if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
                     const items = Array.isArray(data.items) ? data.items : [];
-                    workspace.innerHTML = `<h3>${escapeHtml(ticker)} news</h3><p>Headlines are supplied by the configured market-data provider.</p><div class="pt-news-list">${items.length ? items.map(item => `<a class="pt-news-item" href="${escapeHtml(item.link || '#')}" ${item.link ? 'target="_blank" rel="noopener noreferrer"' : ''}>${escapeHtml(item.title)}<span>${escapeHtml(item.publisher || 'Market data provider')}</span></a>`).join('') : '<p class="pt-empty-copy">No current headlines are available.</p>'}</div>`;
+                    const heading = userPreferences.language === 'th' ? `ข่าวล่าสุดของ ${ticker}` : `${ticker} news`;
+                    const noNews = analysisText('no_news', 'No current headlines are available.');
+                    workspace.innerHTML = `<h3>${escapeHtml(heading)}</h3><p>${escapeHtml(analysisText('news_note', 'Showing up to five recent, ticker-relevant headlines from the last three months.'))}</p><div class="pt-news-list">${items.length ? items.map(item => { const meta = [item.publisher || 'Market data provider', formatAnalysisDate(item.published_at)].filter(Boolean).join(' · '); return `<a class="pt-news-item" href="${escapeHtml(item.link || '#')}" ${item.link ? 'target="_blank" rel="noopener noreferrer"' : ''}>${escapeHtml(item.title)}<span>${escapeHtml(meta)}</span></a>`; }).join('') : `<p class="pt-empty-copy">${escapeHtml(noNews)}</p>`}</div><p class="pt-empty-copy" style="margin-top:10px;">${escapeHtml(analysisText('news_original_language', 'Headlines are displayed in the source language.'))}</p>`;
                     return;
                 }
                 if (tab === 'forecast') {
@@ -290,11 +297,12 @@
                     const [ai, levels] = await Promise.all([aiResponse.json(), levelsResponse.json()]);
                     if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
                     const closest = levels.closest_alert || {};
-                    const metrics = [['Signal', ai.signal], ['Confidence', `${Number(ai.confidence_score || 0).toFixed(1)}/100`], ['Bullish', `${Number(ai.bullish_probability || 0).toFixed(1)}%`], ['Bearish', `${Number(ai.bearish_probability || 0).toFixed(1)}%`], ['Closest weekly S/R', closest.label ? `${closest.label} · $${Number(closest.level).toFixed(2)}` : '—'], ['Distance', Number.isFinite(Number(closest.distance_pct)) ? `${Number(closest.distance_pct).toFixed(2)}%` : '—']];
-                    workspace.innerHTML = `<h3>${escapeHtml(ticker)} analytical forecast</h3><p>${escapeHtml(ai.disclaimer || 'Analytical signal only.')}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? '—'))).join('')}</div>`;
+                    const metrics = [[analysisText('signal', 'Signal'), ai.signal], [analysisText('confidence', 'Confidence'), `${Number(ai.confidence_score || 0).toFixed(1)}/100`], [analysisText('bullish', 'Bullish'), `${Number(ai.bullish_probability || 0).toFixed(1)}%`], [analysisText('bearish', 'Bearish'), `${Number(ai.bearish_probability || 0).toFixed(1)}%`], [analysisText('closest_weekly_sr', 'Closest weekly S/R'), closest.label ? `${closest.label} · $${Number(closest.level).toFixed(2)}` : '—'], [analysisText('distance', 'Distance'), Number.isFinite(Number(closest.distance_pct)) ? `${Number(closest.distance_pct).toFixed(2)}%` : '—']];
+                    const heading = userPreferences.language === 'th' ? `แนวโน้มเชิงวิเคราะห์ ${ticker}` : `${ticker} analytical forecast`;
+                    workspace.innerHTML = `<h3>${escapeHtml(heading)}</h3><p>${escapeHtml(userPreferences.language === 'th' ? analysisText('forecast_note') : (ai.disclaimer || 'Analytical signal only.'))}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? '—'))).join('')}</div>`;
                 }
             } catch (error) {
-                if (requestVersion === stockWorkspaceRequestVersion && ticker === currentTicker) workspace.innerHTML = `<h3>${escapeHtml(ticker)} · ${escapeHtml(tab)}</h3><p class="pt-empty-copy">${escapeHtml(error.message || 'This data is temporarily unavailable. Please retry.')}</p>`;
+                if (requestVersion === stockWorkspaceRequestVersion && ticker === currentTicker) workspace.innerHTML = `<h3>${escapeHtml(ticker)}</h3><p class="pt-empty-copy">${escapeHtml(userPreferences.language === 'th' ? analysisText('unavailable') : (error.message || 'This data is temporarily unavailable. Please retry.'))}</p>`;
             }
         }
 
@@ -370,6 +378,38 @@
         function t(key, fallback) {
             const language = userPreferences.language === 'th' ? 'th' : 'en';
             return UI_TRANSLATIONS[language]?.[key] || fallback || key;
+        }
+
+        function analysisText(key, fallback) {
+            const thai = {
+                loading: 'กำลังโหลดข้อมูลวิเคราะห์…',
+                company_unavailable: 'ยังไม่มีรายละเอียดบริษัทจากผู้ให้บริการข้อมูลในขณะนี้',
+                company_source: 'คำอธิบายฉบับเต็มจากแหล่งข้อมูล (ภาษาเดิม)',
+                sector: 'กลุ่มธุรกิจ', industry: 'อุตสาหกรรม', exchange: 'ตลาดหลักทรัพย์', employees: 'จำนวนพนักงาน', market_cap: 'มูลค่าตลาด', website: 'เว็บไซต์',
+                trailing_pe: 'P/E ย้อนหลัง', forward_pe: 'P/E คาดการณ์', revenue: 'รายได้', profit_margin: 'อัตรากำไรสุทธิ', dividend_yield: 'อัตราเงินปันผล', fair_value: 'มูลค่าพื้นฐาน',
+                financial_note: 'ข้อมูลจากผู้ให้บริการตลาด ใช้ประกอบการวิเคราะห์ ไม่ใช่คำแนะนำทางบัญชีหรือการลงทุน',
+                news_note: 'แสดงข่าวล่าสุดที่เกี่ยวข้องกับหุ้นนี้ ไม่เกิน 5 ข่าว และย้อนหลังไม่เกิน 3 เดือน',
+                news_original_language: 'พาดหัวแสดงตามภาษาของแหล่งข่าว',
+                no_news: 'ยังไม่พบข่าวสำคัญที่เกี่ยวข้องในช่วง 3 เดือนล่าสุด',
+                forecast_note: 'สัญญาณเชิงวิเคราะห์เพื่อประกอบการตัดสินใจ ไม่ใช่คำแนะนำให้ซื้อหรือขาย',
+                signal: 'สัญญาณ', confidence: 'ความเชื่อมั่น', bullish: 'โอกาสขึ้น', bearish: 'โอกาสลง', closest_weekly_sr: 'แนวรับ/ต้านรายสัปดาห์ที่ใกล้สุด', distance: 'ระยะห่าง',
+                unavailable: 'ข้อมูลนี้ยังไม่พร้อมใช้งาน กรุณาลองใหม่อีกครั้ง',
+            };
+            return userPreferences.language === 'th' ? (thai[key] || fallback || key) : (fallback || key);
+        }
+
+        function formatAnalysisDate(value) {
+            const date = new Date(value);
+            if (Number.isNaN(date.getTime())) return '';
+            return date.toLocaleDateString(userPreferences.language === 'th' ? 'th-TH' : 'en-US', { day: 'numeric', month: 'short', year: 'numeric' });
+        }
+
+        function localizedCompanySummary(data) {
+            if (userPreferences.language !== 'th') return data.summary || analysisText('company_unavailable', 'Company overview is not available from the configured market-data provider.');
+            const name = data.name || data.ticker || 'บริษัทนี้';
+            const industry = data.industry && data.industry !== 'Unavailable' ? data.industry : 'กลุ่มธุรกิจที่เกี่ยวข้อง';
+            const sector = data.sector && data.sector !== 'Unavailable' ? data.sector : 'ตลาดทุน';
+            return `${name} ดำเนินธุรกิจในอุตสาหกรรม ${industry} ภายใต้กลุ่มธุรกิจ ${sector} ข้อมูลด้านล่างอ้างอิงจากผู้ให้บริการข้อมูลตลาดล่าสุด.`;
         }
 
         function applyLanguage(language) {
@@ -455,7 +495,7 @@
             if (!items.length) {
                 const empty = document.createElement('p');
                 empty.className = 'pt-empty-copy';
-                empty.textContent = authState.authenticated ? 'Open an instrument to build your personal research trail.' : 'Sign in to sync recently viewed instruments across devices.';
+                empty.textContent = authState.authenticated ? 'Open an instrument to build your personal research trail.' : 'Open a stock to see it here. Sign in to sync this list across devices.';
                 host.appendChild(empty);
                 return;
             }
@@ -473,7 +513,7 @@
 
         async function loadRecentViewed() {
             if (!authState.authenticated || !authState.cloudSyncEnabled) {
-                renderRecentViewed([]);
+                renderRecentViewed(sessionRecentViewed);
                 return;
             }
             try {
@@ -487,8 +527,18 @@
         }
 
         function recordRecentViewed(ticker) {
-            if (!authState.authenticated || !authState.cloudSyncEnabled) return;
-            void authFetch('/api/recent-viewed', { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ ticker }) })
+            const normalizedTicker = String(ticker || '').toUpperCase().trim();
+            if (!/^[A-Z0-9.-]{1,12}$/.test(normalizedTicker)) return;
+            if (!authState.authenticated || !authState.cloudSyncEnabled) {
+                const existing = sessionRecentViewed.find(item => item.ticker === normalizedTicker);
+                sessionRecentViewed = [
+                    { ticker: normalizedTicker, count: (existing?.count || 0) + 1 },
+                    ...sessionRecentViewed.filter(item => item.ticker !== normalizedTicker),
+                ].slice(0, 12);
+                renderRecentViewed(sessionRecentViewed);
+                return;
+            }
+            void authFetch('/api/recent-viewed', { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ ticker: normalizedTicker }) })
                 .then(response => response.ok ? loadRecentViewed() : undefined)
                 .catch(error => console.warn('Recently viewed instrument could not be recorded:', error));
         }
@@ -1768,7 +1818,7 @@
                 resetCloudWorkspace();
                 favoriteTickers = new Set();
                 updateFavoriteButton();
-                renderRecentViewed([]);
+                renderRecentViewed(sessionRecentViewed);
             }
             if (sessionEpoch !== authSessionEpoch) return;
             setAuthGate(authState.configured === true && !authState.authenticated && !authState.recoveryMode);
