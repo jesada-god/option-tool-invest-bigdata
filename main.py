@@ -808,28 +808,31 @@ def get_options_chain_summary(ticker: str) -> Optional[dict]:
 # ---------------------------------------------------------------------------
 @app.get("/api/gauges")
 def get_gauges(ticker: str = "NVDA", account_size: float = 100_000.0):
-    ticker = ticker.upper()
-    stats = stats_engine.analyze_key_statistics(ticker)
+    try:
+        ticker = ticker.upper()
+        stats = stats_engine.analyze_key_statistics(ticker)
 
-    ticker_positions = [p for p in logged_positions if p["ticker"].upper() == ticker]
-    pg = portfolio_engine.compute_portfolio_greeks(ticker_positions, get_underlying_price=get_base_price)
-    portfolio_greeks = None
-    if pg["position_count"] > 0:
-        portfolio_greeks = {"net_theta": pg["net_theta"], "net_vega": pg["net_vega"], "net_gamma": pg["net_gamma"]}
+        ticker_positions = [p for p in logged_positions if p["ticker"].upper() == ticker]
+        pg = portfolio_engine.compute_portfolio_greeks(ticker_positions, get_underlying_price=get_base_price)
+        portfolio_greeks = None
+        if pg["position_count"] > 0:
+            portfolio_greeks = {"net_theta": pg["net_theta"], "net_vega": pg["net_vega"], "net_gamma": pg["net_gamma"]}
 
-    chain_summary = get_options_chain_summary(ticker)
-    current_iv = stats.get("current_iv") or 0.30
+        chain_summary = get_options_chain_summary(ticker)
+        current_iv = stats.get("current_iv") or 0.30
 
-    gauges = gauges_engine.compute_gauges(
-        technical_indicators=stats.get("indicators", {}),
-        ratings=stats.get("ratings", {}),
-        current_iv=current_iv,
-        iv_history=stats.get("iv_history", []),
-        portfolio_greeks=portfolio_greeks,
-        account_size=account_size,
-        options_chain_summary=chain_summary,
-    )
-    return {"ticker": ticker, "gauges": gauges, "portfolio_context": pg}
+        gauges = gauges_engine.compute_gauges(
+            technical_indicators=stats.get("indicators", {}),
+            ratings=stats.get("ratings", {}),
+            current_iv=current_iv,
+            iv_history=stats.get("iv_history", []),
+            portfolio_greeks=portfolio_greeks,
+            account_size=account_size,
+            options_chain_summary=chain_summary,
+        )
+        return {"ticker": ticker, "gauges": gauges, "portfolio_context": pg}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Gauges endpoint error: {str(e)}")
 
 
 

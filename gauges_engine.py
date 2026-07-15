@@ -35,13 +35,34 @@ class Gauge:
     reasons: list = field(default_factory=list)
 
 
+def _finite(x):
+    if x is None:
+        return None
+    try:
+        x = float(x)
+    except Exception:
+        return None
+    if not np.isfinite(x):
+        return None
+    return x
+
+
 def _clip(x, lo=0, hi=100):
+    x = _finite(x)
+    if x is None:
+        return None
     return float(np.clip(x, lo, hi))
 
 
+def _round_score(x, ndigits=1):
+    x = _finite(x)
+    return round(x, ndigits) if x is not None else None
+
+
 def _label(score: Optional[float], bearish_bullish=True) -> str:
-    if score is None:
+    if score is None or _finite(score) is None:
         return "N/A"
+    score = float(score)
     if bearish_bullish:
         if score >= 70: return "STRONGLY BULLISH"
         if score >= 55: return "BULLISH"
@@ -84,34 +105,38 @@ def compute_gauges(*, technical_indicators: dict, ratings: dict, current_iv: flo
     gauges = {}
 
     # --- Bullish / Bearish score (derived from momentum + trend ratings) ---
-    mom = ratings.get("momentum_rating", {}).get("score", 50)
-    trend = ratings.get("trend_rating", {}).get("score", 50)
+    mom = _finite(ratings.get("momentum_rating", {}).get("score", 50)) or 50.0
+    trend = _finite(ratings.get("trend_rating", {}).get("score", 50)) or 50.0
     bullish = _clip(0.5 * mom + 0.5 * trend)
-    gauges["bullish_score"] = Gauge(bullish, _label(bullish), [
+    bearish = _clip(100 - bullish)
+    gauges["bullish_score"] = Gauge(_round_score(bullish), _label(bullish), [
         f"Momentum rating {mom}/100", f"Trend rating {trend}/100",
     ])
-    gauges["bearish_score"] = Gauge(round(100 - bullish, 1), _label(100 - bullish),
+    gauges["bearish_score"] = Gauge(_round_score(bearish), _label(bearish),
                                      ["Mirror of bullish score (100 - bullish)"])
 
-    gauges["momentum_score"] = Gauge(mom, _label(mom), ratings.get("momentum_rating", {}).get("reasons", []))
-    gauges["trend_score"] = Gauge(trend, _label(trend), ratings.get("trend_rating", {}).get("reasons", []))
+    gauges["momentum_score"] = Gauge(_round_score(mom), _label(mom), ratings.get("momentum_rating", {}).get("reasons", []))
+    gauges["trend_score"] = Gauge(_round_score(trend), _label(trend), ratings.get("trend_rating", {}).get("reasons", []))
 
     # --- IV score / rank / percentile ---
-    ivrp = iv_rank_percentile(current_iv, iv_history or [])
-    iv_score = ivrp["iv_rank"] if ivrp["iv_rank"] is not None else None
+    ivrp = iv_rank_percentile(_finite(current_iv) or 0.0, iv_history or [])
+    iv_score = _round_score(ivrp["iv_rank"])
+    iv_rank = _round_score(ivrp["iv_rank"])
+    iv_percentile = _round_score(ivrp["iv_percentile"])
     gauges["iv_score"] = Gauge(iv_score, _label(iv_score, bearish_bullish=False) if iv_score is not None else "N/A",
                                 ivrp["reasons"])
-    gauges["iv_rank"] = Gauge(ivrp["iv_rank"], "", ivrp["reasons"])
-    gauges["iv_percentile"] = Gauge(ivrp["iv_percentile"], "", ivrp["reasons"])
+    gauges["iv_rank"] = Gauge(iv_rank, "", ivrp["reasons"])
+    gauges["iv_percentile"] = Gauge(iv_percentile, "", ivrp["reasons"])
 
     # --- Gamma / Theta / Vega risk (from portfolio dollar Greeks relative to account size) ---
     pg = portfolio_greeks or {}
     def _risk_gauge(name, dollar_value, scale):
+        dollar_value = _finite(dollar_value)
         if dollar_value is None:
             return Gauge(None, "N/A", ["No portfolio Greeks supplied"])
         pct_of_account = abs(dollar_value) / account_size * 100
         score = _clip(pct_of_account * scale)
-        return Gauge(round(score, 1), _label(score, bearish_bullish=False),
+        return Gauge(_round_score(score), _label(score, bearish_bullish=False),
                      [f"{name} exposure ${dollar_value:,.2f} = {pct_of_account:.2f}% of ${account_size:,.0f} account"])
 
     gauges["gamma_risk"] = _risk_gauge("Net Gamma $", pg.get("net_gamma"), scale=20)
@@ -120,33 +145,31 @@ def compute_gauges(*, technical_indicators: dict, ratings: dict, current_iv: flo
 
     # --- Dealer gamma / dealer position / flow / dark pool (need options chain / tape data) ---
     if options_chain_summary:
-        call_oi = options_chain_summary.get("call_oi", 0)
-        put_oi = options_chain_summary.get("put_oi", 0)
-        call_vol = options_chain_summary.get("call_volume", 0)
-        put_vol = options_chain_summary.get("put_volume", 0)
-        pc_oi_ratio = put_oi / call_oi if call_oi else None
-        pc_vol_ratio = put_vol / call_vol if call_vol else None
-        net_gamma_notional = options_chain_summary.get("net_gamma_notional")
+        call_oi = _finite(options_chain_summary.get("call_oi", 0)) or 0.0
+        put_oi = _finite(options_chain_summary.get("put_oi", 0)) or 0.0
+        call_vol = _finite(options_chain_summary.get("call_volume", 0)) or 0.0
+        put_vol = _finite(options_chain_summary.get("put_volume", 0)) or 0.0
+        pc_oi_ratio = (put_oi / call_oi) if call_oi else None
+        pc_vol_ratio = (put_vol / call_vol) if call_vol else None
+        net_gamma_notional = _finite(options_chain_summary.get("net_gamma_notional"))
 
         dealer_gamma_score = None
         if net_gamma_notional is not None:
-            # Convention: dealers typically long gamma vs. retail long calls -> positive
-            # net_gamma_notional here assumed net-of-customer-long-gamma from the chain.
             dealer_gamma_score = _clip(50 + math.copysign(min(abs(net_gamma_notional) / 1e6, 1) * 40,
                                                             -net_gamma_notional))
         gauges["dealer_gamma"] = Gauge(
-            round(dealer_gamma_score, 1) if dealer_gamma_score is not None else None,
+            _round_score(dealer_gamma_score),
             "N/A" if dealer_gamma_score is None else ("DEALER SHORT GAMMA" if dealer_gamma_score > 55
                                                         else "DEALER LONG GAMMA" if dealer_gamma_score < 45
                                                         else "NEUTRAL"),
             [f"Estimated from options-chain net gamma notional (approximation, not a licensed dealer-flow feed)"])
 
-        dp_score = round(_clip(50 + (pc_oi_ratio - 1) * 25), 1) if pc_oi_ratio is not None else None
+        dp_score = _round_score(_clip(50 + (pc_oi_ratio - 1) * 25)) if pc_oi_ratio is not None else None
         gauges["dealer_position"] = Gauge(
             dp_score, _label(dp_score, bearish_bullish=False) if dp_score is not None else "N/A",
             [f"Put/Call OI ratio = {pc_oi_ratio:.2f}" if pc_oi_ratio else "No OI data"])
 
-        fs_score = round(_clip(50 + (pc_vol_ratio - 1) * -30), 1) if pc_vol_ratio is not None else None
+        fs_score = _round_score(_clip(50 + (pc_vol_ratio - 1) * -30)) if pc_vol_ratio is not None else None
         gauges["flow_strength"] = Gauge(
             fs_score, _label(fs_score, bearish_bullish=False) if fs_score is not None else "N/A",
             [f"Put/Call volume ratio = {pc_vol_ratio:.2f}" if pc_vol_ratio else "No volume data"])
@@ -164,23 +187,26 @@ def compute_gauges(*, technical_indicators: dict, ratings: dict, current_iv: flo
         None, "N/A", ["Derived from institutional + dark-pool + options-flow signals, none of which are supplied"])
 
     # --- Sentiment / Fear index: proxy from volatility + momentum until a news-sentiment feed is wired in ---
-    vol_score = ratings.get("volatility_rating", {}).get("score", 50)
+    vol_score = _finite(ratings.get("volatility_rating", {}).get("score", 50)) or 50.0
     fear_index = _clip(0.6 * vol_score + 0.4 * (100 - mom))
-    gauges["market_fear_index"] = Gauge(round(fear_index, 1), _label(fear_index, bearish_bullish=False), [
+    gauges["market_fear_index"] = Gauge(_round_score(fear_index), _label(fear_index, bearish_bullish=False), [
         f"Proxy from volatility rating ({vol_score}) and inverse momentum ({100-mom})",
         "Not a VIX-equivalent; wire in a news-sentiment feed for a true fear gauge",
     ])
-    gauges["sentiment_score"] = Gauge(round(bullish, 1), _label(bullish), [
+    gauges["sentiment_score"] = Gauge(_round_score(bullish), _label(bullish), [
         "Proxy: currently mirrors bullish_score pending a dedicated news/social sentiment feed",
     ])
 
     # --- overall confidence: fraction of gauges with real data * average data-quality ---
     total = len(gauges)
     available = sum(1 for g in gauges.values() if g.score is not None)
-    gauges["confidence_score"] = Gauge(round(available / total * 100, 1), "",
+    gauges["confidence_score"] = Gauge(_round_score(available / total * 100), "",
                                         [f"{available}/{total} gauges backed by live data"])
 
-    return {k: vars(v) for k, v in gauges.items()}
+    result = {k: vars(v) for k, v in gauges.items()}
+    for v in result.values():
+        v["score"] = _finite(v.get("score"))
+    return result
 
 
 # ---------------------------------------------------------------------------
