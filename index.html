@@ -1273,7 +1273,7 @@
         let srData = null;
         let activePositions = [];
         let isChangingData = false;
-        let currentLivePrice = 0;
+        let currentLivePrice = null;
         let currentPrevClose = 0;
         let currentClosePrice = 0;
         let watchlist = [];
@@ -1627,16 +1627,28 @@ ${t}
 `).join('');
         }
 
+        function formatUsd(value) {
+            return (typeof value === 'number' && Number.isFinite(value)) ? `$${value.toFixed(2)}` : '-';
+        }
+
+        function formatPct(value, digits = 2) {
+            return (typeof value === 'number' && Number.isFinite(value)) ? `${value.toFixed(digits)}%` : '-';
+        }
+
+        function formatPrice(value) {
+            return Number.isFinite(value) ? `$${value.toFixed(2)}` : '-';
+        }
+
         function setFairValueDisplay(fairValue, upsidePct) {
             const el = document.getElementById('stat-cap');
-            if (fairValue === null || fairValue === undefined) { el.innerText = '-'; return; }
-            if (upsidePct === null || upsidePct === undefined) {
-                el.innerText = `$${fairValue.toFixed(2)}`;
+            if (!Number.isFinite(fairValue)) { el.innerText = '-'; return; }
+            if (!Number.isFinite(upsidePct)) {
+                el.innerText = formatUsd(fairValue);
                 return;
             }
             const color = upsidePct >= 0 ? 'var(--green)' : 'var(--red)';
             const sign = upsidePct >= 0 ? '+' : '';
-            el.innerHTML = `$${fairValue.toFixed(2)} <span style="font-size:11px; color:${color};">(${sign}${upsidePct}%)</span>`;
+            el.innerHTML = `${formatUsd(fairValue)} <span style="font-size:11px; color:${color};">(${sign}${upsidePct}%)</span>`;
         }
 
         function srConfidenceColor(confidence) {
@@ -1656,26 +1668,15 @@ ${t}
             const rowHtml = (item, type) => {
                 const near = item.distance_pct !== null && item.distance_pct !== undefined && item.distance_pct <= 1.5;
                 const labelColor = type === 'resistance' ? 'var(--red)' : 'var(--green)';
-                const zoneRange = (item.zone_low && item.zone_high)
-                    ? `<div class="sr-zone-range">โซน $${item.zone_low.toFixed(2)} - $${item.zone_high.toFixed(2)}</div>` : '';
+                const zoneRange = (Number.isFinite(item.zone_low) && Number.isFinite(item.zone_high))
+                    ? `<div class="sr-zone-range">โซน ${formatPrice(item.zone_low)} - ${formatPrice(item.zone_high)}</div>` : '';
                 const reasons = (item.reasons || []).join(' | ').replace(/"/g, '&quot;');
                 const confColor = srConfidenceColor(item.confidence);
                 const strengthTxt = (item.strength !== null && item.strength !== undefined) ? `${item.strength}%` : 'N/A';
                 return `<div class="sr-row ${type} ${near ? 'near' : ''}" title="${reasons}">
 <span class="sr-label" style="color:${labelColor}">${item.label}</span>
 <div class="sr-main">
-    <span class="sr-price">$${item.level.toFixed(2)} <span class="sr-eta">${item.distance_pct}%${item.eta ? ' · ' + item.eta : ''}</span></span>
-    ${zoneRange}
-</div>
-<span class="sr-strength-badge" style="background:${confColor}22; color:${confColor};">${strengthTxt} · ${item.confidence || ''}</span>
-</div>`;
-            };
-
-            const resistancesDesc = [...srData.resistance].reverse();
-            let html = resistancesDesc.map(r => rowHtml(r, 'resistance')).join('');
-            html += `<div class="sr-current-marker">💲 ราคาปัจจุบัน $${srData.current_price.toFixed(2)}</div>`;
-            html += srData.support.map(s => rowHtml(s, 'support')).join('');
-            ladder.innerHTML = html;
+    <span class="sr-price">${formatPrice(item.level)} <span class="sr-eta">${item.distance_pct}%${item.eta ? ' · ' + item.eta : ''}</span></span>
 
 
             if (srData.closest_alert) {
@@ -1685,7 +1686,7 @@ ${t}
                 banner.style.display = 'block';
                 banner.style.background = isRes ? 'rgba(255,59,48,0.12)' : 'rgba(0,197,127,0.12)';
                 banner.style.color = isRes ? 'var(--red)' : 'var(--green)';
-                banner.innerText = `🔔 ใกล้ถึง ${c.label} ที่ $${c.level.toFixed(2)} (ห่าง ${c.distance_pct}%, Strength ${c.strength}% · ${c.confidence})${c.eta ? ' · คาดว่าอีกประมาณ ' + c.eta : ''}`;
+                banner.innerText = `🔔 ใกล้ถึง ${c.label} ที่ ${formatPrice(c.level)} (ห่าง ${Number.isFinite(c.distance_pct) ? c.distance_pct.toFixed(2) + '%' : '-'}, Strength ${Number.isFinite(c.strength) ? c.strength : '-'}% · ${c.confidence})${c.eta ? ' · คาดว่าอีกประมาณ ' + c.eta : ''}`;
             } else {
                 banner.style.display = 'none';
             }
@@ -1709,7 +1710,7 @@ ${t}
             // ราคาหลัก: เทียบกับราคาปิดวันก่อนหน้า
             const changeEl = document.getElementById('price-change');
             if (changeEl) {
-                if (currentPrevClose > 0) {
+                if (typeof currentLivePrice === 'number' && Number.isFinite(currentLivePrice) && currentPrevClose > 0) {
                     const diff = currentLivePrice - currentPrevClose;
                     const pct = (diff / currentPrevClose) * 100;
                     const sign = diff >= 0 ? '+' : '';
@@ -1752,29 +1753,36 @@ ${t}
                     throw new Error(`Stats request failed: ${statsRes.status} ${statsRes.statusText} - ${text.slice(0, 250)}`);
                 }
                 const stats = await statsRes.json();
-                currentLivePrice = stats.current_price;
+                const livePriceRaw = stats.current_price;
+                const livePriceNum = typeof livePriceRaw === 'number'
+                    ? livePriceRaw
+                    : (typeof livePriceRaw === 'string' && livePriceRaw.trim() !== '' ? Number(livePriceRaw) : NaN);
+                currentLivePrice = Number.isFinite(livePriceNum) ? livePriceNum : null;
                 currentMarketSession = stats.market_session || "CLOSED";
 
-                document.getElementById('live-price').innerText = `$${currentLivePrice.toFixed(2)}`;
+                const livePriceEl = document.getElementById('live-price');
+                if (livePriceEl) {
+                    livePriceEl.innerText = Number.isFinite(currentLivePrice) ? `$${currentLivePrice.toFixed(2)}` : '-';
+                }
 
                 // เก็บราคาปิดวันก่อนหน้า/ราคาปิดปกติไว้ใช้คำนวณ % แบบ real-time
-                currentPrevClose = stats.prev_close || 0;
-                currentClosePrice = stats.close_price || 0;
+                currentPrevClose = Number(stats.prev_close) || 0;
+                currentClosePrice = Number(stats.close_price) || 0;
 
                 document.getElementById('stat-pe').innerText = stats.pe_ratio;
                 setFairValueDisplay(stats.fair_value, stats.fair_value_upside_pct);
                 document.getElementById('stat-vol').innerText = stats.volume;
                 document.getElementById('stat-pcr').innerText = stats.put_call_ratio;
 
-                document.getElementById('iv-val').innerText = `${stats.iv_rank}%`;
-                document.getElementById('iv-fill').style.width = `${Math.min(stats.iv_rank, 100)}%`;
+                document.getElementById('iv-val').innerText = Number.isFinite(Number(stats.iv_rank)) ? `${Number(stats.iv_rank)}%` : '-';
+                document.getElementById('iv-fill').style.width = `${Math.min(Number.isFinite(Number(stats.iv_rank)) ? Number(stats.iv_rank) : 0, 100)}%`;
 
                 // Market session badge + pre/post prices
                 const sessionLabels = { REGULAR: "🟢 กำลังเทรด", PRE: "🌅 Pre-Market", POST: "🌆 After-Hours", CLOSED: "🔴 ตลาดปิด" };
                 const badge = document.getElementById('session-badge');
                 badge.innerText = sessionLabels[currentMarketSession] || currentMarketSession;
                 badge.className = `market-session-badge session-${currentMarketSession}`;
-                document.getElementById('post-price').innerText = stats.post_price ? `$${stats.post_price.toFixed(2)}` : '-';
+                document.getElementById('post-price').innerText = Number.isFinite(Number(stats.post_price)) ? `$${Number(stats.post_price).toFixed(2)}` : '-';
 
                 // ตอนนี้ live-price และ post-price ถูกตั้งค่าแล้ว จึงคำนวณ % ได้
                 updatePriceChangeDisplay();
@@ -2021,8 +2029,8 @@ ${t}
 
                 const priceDisplay = document.getElementById('live-price');
                 if (priceDisplay) {
-                    priceDisplay.innerText = `$${currentLivePrice.toFixed(2)}`;
-                    priceDisplay.style.color = currentLivePrice >= lastPrice ? 'var(--green)' : 'var(--red)';
+                    priceDisplay.innerText = Number.isFinite(currentLivePrice) ? `$${currentLivePrice.toFixed(2)}` : '-';
+                    priceDisplay.style.color = Number.isFinite(currentLivePrice) && Number.isFinite(lastPrice) && currentLivePrice >= lastPrice ? 'var(--green)' : 'var(--red)';
                 }
 
                 // ราคาขยับ -> คำนวณ % ใหม่ทุกครั้ง
@@ -2068,7 +2076,7 @@ ${t}
                         const cellPnl = document.getElementById(`table-pnl-${p.id}`);
                         const cellSellPrice = document.getElementById(`table-sellprice-${p.id}`);
 
-                        if (cellPrice) cellPrice.innerText = `$${currentLivePrice.toFixed(2)}`;
+                        if (cellPrice) cellPrice.innerText = Number.isFinite(currentLivePrice) ? `$${currentLivePrice.toFixed(2)}` : '-';
                         if (cellSellPrice) cellSellPrice.innerText = `$${currentPremium.toFixed(2)}`;
 
                         if (cellPnl) {
