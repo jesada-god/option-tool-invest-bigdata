@@ -1328,6 +1328,11 @@
         let ws = null;
         let searchDebounce = null;
 
+        function getSRRightOffset() {
+            const offset = Math.max(80, Math.min(120, Math.floor(window.innerWidth * 0.12)));
+            return offset;
+        }
+
         const searchInput = document.getElementById('search-input');
         const autocompleteList = document.getElementById('autocomplete-list');
 
