@@ -148,7 +148,9 @@ class ProfileRepository:
             # Auth identity is authoritative for email/avatar/login time.  Do
             # not overwrite a user-selected username after first-time setup.
             profile.email = normalized_email or profile.email
-            profile.avatar_url = avatar_url or profile.avatar_url
+            # A user-selected image is stored on the profile.  Do not replace
+            # it with a provider avatar on every authenticated request.
+            profile.avatar_url = profile.avatar_url or avatar_url
             profile.last_login_at = now
 
         preferences = session.get(UserPreference, profile_id)

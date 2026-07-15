@@ -1,6 +1,8 @@
 /* Quantora caches the application shell only. Authentication and cloud data
    are intentionally never stored by this worker. */
-const CACHE_NAME = 'quantora-shell-v1';
+// Bump this whenever the application shell changes so an older offline page
+// cannot mask a newly deployed UI after the worker activates.
+const CACHE_NAME = 'quantora-shell-v2';
 const SHELL = ['/'];
 
 self.addEventListener('install', event => {

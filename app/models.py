@@ -62,7 +62,7 @@ class Profile(TimestampMixin, Base):
     id: Mapped[uuid.UUID] = mapped_column(Uuid(as_uuid=True), primary_key=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
     username: Mapped[str] = mapped_column(String(32), nullable=False)
-    avatar_url: Mapped[str | None] = mapped_column(String(2_048), nullable=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(262_144), nullable=True)
     last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     # ``NULL`` means the auth provider created a provisional profile but the
     # user has not finished the first-time username setup flow yet.
@@ -254,6 +254,13 @@ class Position(TimestampMixin, Base):
             "strike_price IS NULL OR strike_price >= 0", name="ck_positions_strike_price_nonnegative"
         ),
         Index("ix_positions_portfolio_open", "portfolio_id", "is_open"),
+        Index(
+            "ix_positions_portfolio_option_opened",
+            "portfolio_id",
+            "asset_type",
+            "is_open",
+            "opened_at",
+        ),
         Index("ix_positions_ticker", "ticker"),
         Index("ix_positions_underlying_ticker", "underlying_ticker"),
     )

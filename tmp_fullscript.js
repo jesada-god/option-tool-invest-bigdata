@@ -1716,7 +1716,7 @@
                 return;
             }
             if (authState.configured === false) {
-                host.innerHTML = `<div class="pt-sync-note">Cloud sign-in is not configured on this deployment yet. Account data will be available after Supabase credentials are added.</div>${sessionSettingsMarkup()}<div id="profile-auth-status" class="pt-auth-status"></div>`;
+                host.innerHTML = `<div class="pt-sync-note"><strong style="color:#f3f5ff;">Sign-in is not enabled on this deployment yet.</strong><br>Set <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> in Render, then redeploy. The Login / Create account form will appear automatically after the secure auth service is available.</div>${sessionSettingsMarkup()}<div id="profile-auth-status" class="pt-auth-status"></div>`;
                 return;
             }
             if (authState.recoveryMode) {

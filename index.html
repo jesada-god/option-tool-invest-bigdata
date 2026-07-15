@@ -2359,7 +2359,8 @@
         </div>
     </div>
 
-    <div class="watchlist-container" id="watchlist-row"></div>
+    <div class="watchlist-container" id="watchlist-row" aria-live="polite"></div>
+    <p id="watchlist-status" role="status" aria-live="polite" style="margin:6px 0 0; min-height:17px; color:var(--text-muted); font-size:12px;"></p>
 
     <nav class="pt-stock-tabs" aria-label="Stock analysis sections" role="tablist">
         <button class="pt-stock-tab is-active" type="button" role="tab" aria-selected="true" data-stock-tab="overview" data-i18n="overview" onclick="openStockWorkspaceTab('overview', this)">Overview</button>
@@ -2502,22 +2503,25 @@
 
         <form id="pos-form" onsubmit="submitPosition(event)">
             <div class="form-grid">
-                <input type="number" id="form-strike" placeholder="Strike Price ($)" step="0.01" required>
+                <input type="number" id="form-strike" placeholder="ราคาใช้สิทธิ ($)" step="0.01" min="0.01" required>
                 <select id="form-type">
-                    <option value="CALL">BUY CALL (มองขึ้น)</option>
-                    <option value="PUT">BUY PUT (มองลง)</option>
+                    <option value="CALL">สิทธิซื้อ (Call)</option>
+                    <option value="PUT">สิทธิขาย (Put)</option>
                 </select>
                 <input type="date" id="form-exp" required>
-                <input type="number" id="form-premium" placeholder="พรีเมียมต่อหุ้น (เช่น 1.38)" step="0.01" required>
-                <input type="number" id="form-qty" placeholder="Quantity (สัญญา)" required>
-                <input type="number" id="form-iv" placeholder="IV % (เช่น 114.5)" step="0.1">
-                <input type="number" id="form-delta" placeholder="Delta (เช่น 0.45)" step="0.01">
+                <input type="number" id="form-premium" placeholder="ค่า Premium ต่อหุ้น" title="ราคาที่จ่ายเพื่อซื้อออปชัน" step="0.01" min="0.01" required>
+                <input type="number" id="form-qty" placeholder="จำนวนสัญญา" step="1" min="1" required>
+                <input type="number" id="form-iv" placeholder="IV % (เช่น 114.5)" title="ค่าความผันผวนโดยนัย" step="0.1" min="0.01" required>
+                <input type="number" id="form-delta" placeholder="Delta (เช่น 0.45)" title="การเปลี่ยนแปลงของราคาออปชันเมื่อราคาหุ้นเปลี่ยน 1 ดอลลาร์" step="0.01" min="-1" max="1" required>
                 <select id="form-portfolio-id" class="workspace-position-portfolio" aria-label="Cloud portfolio for this option position" hidden disabled>
                     <option value="">Default portfolio</option>
                 </select>
                 <button type="submit" class="btn-submit">เปิดสัญญา</button>
+                <button type="button" id="position-cancel-edit" class="btn-submit" style="display:none; background:transparent; border:1px solid var(--text-muted); color:var(--text-muted);" onclick="cancelPositionEdit()">ยกเลิก</button>
             </div>
         </form>
+        <p id="position-form-status" role="status" aria-live="polite" style="min-height:18px; margin:8px 0 0; font-size:12px; color:var(--text-muted);"></p>
+        <div id="portfolio-summary" class="stat-grid" aria-live="polite" style="margin:16px 0 4px;"></div>
 
         <div class="table-responsive">
             <table class="pos-table">
@@ -2663,6 +2667,7 @@
         let currentPrevClose = 0;
         let currentClosePrice = 0;
         let watchlist = [];
+        const LOCAL_WATCHLIST_STORAGE_KEY = 'quantora.session-watchlist.v1';
         let favoriteTickers = new Set();
         // Guest activity is intentionally memory-only: no LocalStorage and no
         // cross-device claim until cloud authentication is configured.
@@ -2698,8 +2703,11 @@
         let isPageVisible = document.visibilityState === 'visible';
         let isNetworkOnline = navigator.onLine;
         let terminalResyncTimer = null;
+        let portfolioRefreshTimer = null;
+        let portfolioRefreshInFlight = false;
         let preferenceSyncTimer = null;
         let profileSheetReturnFocus = null;
+        let pendingProfileAvatarUrl = null;
         let userPreferences = { theme: 'dark', language: 'en', currency: 'USD', timezone: 'UTC', default_timeframe: '1d', default_indicator: 'Smart S/R' };
         const UI_TRANSLATIONS = Object.freeze({
             th: {
@@ -4274,7 +4282,7 @@
                 setCloudWorkspaceStatus('Enter a valid ticker, for example NVDA.', 'error');
                 return;
             }
-            await mutateCloudWorkspace(`/api/watchlists/${selected.id}/items`, {
+            return await mutateCloudWorkspace(`/api/watchlists/${selected.id}/items`, {
                 method: 'POST', headers: authHeaders(true), body: JSON.stringify({ ticker }),
             }, `${ticker} added to ${selected.name}.`);
         }
@@ -4326,8 +4334,15 @@
             const avatar = document.getElementById('profile-sheet-avatar');
             const name = document.getElementById('profile-sheet-name');
             const email = document.getElementById('profile-sheet-email');
-            if (avatarButton) avatarButton.textContent = initials;
-            if (avatar) avatar.textContent = initials;
+            const avatarUrl = user && user.avatar_url;
+            [avatarButton, avatar].forEach(element => {
+                if (!element) return;
+                element.textContent = initials;
+                element.style.backgroundImage = avatarUrl ? `url("${avatarUrl}")` : '';
+                element.style.backgroundSize = avatarUrl ? 'cover' : '';
+                element.style.backgroundPosition = avatarUrl ? 'center' : '';
+                element.style.color = avatarUrl ? 'transparent' : '';
+            });
             if (!authState.authenticated || !user) {
                 if (name) name.textContent = authState.configured === false ? 'Quantora AI' : 'Quantora AI User';
                 if (email) email.textContent = authState.configured === false ? 'Cloud authentication is not configured' : 'Secure session required';
@@ -4344,6 +4359,75 @@
             const nickname = user.username || user.display_name;
             if (greeting && nickname) greeting.innerHTML = userPreferences.language === 'th' ? `สวัสดี ${escapeHtml(nickname)} <span>👋</span>` : `Hello ${escapeHtml(nickname)} <span>👋</span>`;
             if (greetingCopy && nickname) greetingCopy.textContent = userPreferences.language === 'th' ? 'ยินดีต้อนรับสู่พอร์ตของคุณ ข้อมูลของคุณซิงก์เรียบร้อยแล้ว' : 'Welcome to your Portfolio. Your synced Quantora workspace is ready.';
+        }
+
+        function setProfileImagePreview(url) {
+            const preview = document.getElementById('profile-image-preview');
+            if (!preview) return;
+            preview.style.backgroundImage = url ? `url("${url}")` : '';
+            preview.style.backgroundSize = url ? 'cover' : '';
+            preview.style.backgroundPosition = url ? 'center' : '';
+            preview.textContent = url ? '' : profileInitials(authState.user);
+        }
+
+        async function previewProfileImage(input) {
+            const file = input && input.files && input.files[0];
+            if (!file) return;
+            if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+                setAuthStatus('รองรับเฉพาะไฟล์ JPG, PNG และ WEBP', 'error');
+                input.value = '';
+                return;
+            }
+            if (file.size > 5 * 1024 * 1024) {
+                setAuthStatus('รูปภาพต้องมีขนาดไม่เกิน 5 MB', 'error');
+                input.value = '';
+                return;
+            }
+            const sourceUrl = URL.createObjectURL(file);
+            try {
+                const image = await new Promise((resolve, reject) => {
+                    const candidate = new Image();
+                    candidate.onload = () => resolve(candidate);
+                    candidate.onerror = () => reject(new Error('ไม่สามารถอ่านรูปภาพนี้ได้'));
+                    candidate.src = sourceUrl;
+                });
+                const side = Math.min(image.naturalWidth, image.naturalHeight);
+                const sourceX = (image.naturalWidth - side) / 2;
+                const sourceY = (image.naturalHeight - side) / 2;
+                const canvas = document.createElement('canvas');
+                canvas.width = 160;
+                canvas.height = 160;
+                canvas.getContext('2d').drawImage(image, sourceX, sourceY, side, side, 0, 0, 160, 160);
+                pendingProfileAvatarUrl = canvas.toDataURL('image/webp', 0.82);
+                setProfileImagePreview(pendingProfileAvatarUrl);
+                setAuthStatus('ตัวอย่างรูปภาพพร้อมบันทึกแล้ว', 'success');
+            } catch (error) {
+                setAuthStatus(error.message || 'ไม่สามารถเตรียมรูปภาพได้', 'error');
+            } finally {
+                URL.revokeObjectURL(sourceUrl);
+            }
+        }
+
+        async function saveProfileDetails() {
+            const username = document.getElementById('profile-display-name')?.value.trim();
+            if (!username || !/^[A-Za-z0-9_.-]{3,32}$/.test(username)) {
+                setAuthStatus('ชื่อที่แสดงต้องมี 3–32 ตัวอักษร และใช้ได้เฉพาะตัวอักษร ตัวเลข จุด ขีดล่าง หรือขีดกลาง', 'error');
+                return;
+            }
+            const payload = { username };
+            if (pendingProfileAvatarUrl) payload.avatar_url = pendingProfileAvatarUrl;
+            try {
+                const response = await authFetch('/api/me', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload) });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'ไม่สามารถบันทึกโปรไฟล์ได้');
+                authState.user = data.user || authState.user;
+                pendingProfileAvatarUrl = null;
+                setProfileSummary();
+                renderProfileAuthContent();
+                setAuthStatus('บันทึกโปรไฟล์แล้ว', 'success');
+            } catch (error) {
+                setAuthStatus(error.message || 'ไม่สามารถบันทึกโปรไฟล์ได้', 'error');
+            }
         }
 
         function setAuthStatus(message, tone = '') {
@@ -4367,7 +4451,7 @@
                 return;
             }
             if (authState.configured === false) {
-                host.innerHTML = `<div class="pt-sync-note">Cloud sign-in is not configured on this deployment yet. Account data will be available after Supabase credentials are added.</div>${sessionSettingsMarkup()}<div id="profile-auth-status" class="pt-auth-status"></div>`;
+                host.innerHTML = `<div class="pt-sync-note"><strong style="color:#f3f5ff;">Sign-in is not enabled on this deployment yet.</strong><br>Set <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> in Render, then redeploy. The Login / Create account form will appear automatically after the secure auth service is available.</div>${sessionSettingsMarkup()}<div id="profile-auth-status" class="pt-auth-status"></div>`;
                 return;
             }
             if (authState.recoveryMode) {
@@ -4396,6 +4480,16 @@
                 host.innerHTML = `
                     <div class="pt-auth-stack">
                         <div class="pt-sync-note" style="margin:0;">${authState.cloudSyncEnabled ? 'Cloud sync is active for watchlists, positions, and indicator preferences on this account.' : 'Your account is signed in, but cloud storage is not configured on this deployment yet.'}</div>
+                        <section class="pt-sync-note" style="margin:0;">
+                            <strong style="color:#f3f5ff;">โปรไฟล์</strong>
+                            <div style="display:flex; gap:12px; align-items:center; margin-top:10px;">
+                                <div id="profile-image-preview" class="pt-sheet-avatar" style="flex:0 0 48px; width:48px; height:48px;">${escapeHtml(profileInitials(user))}</div>
+                                <label class="pt-auth-field" style="margin:0; flex:1;"><span>ชื่อที่แสดง</span><input id="profile-display-name" maxlength="32" autocomplete="username" value="${escapeHtml(user.username || '')}"></label>
+                            </div>
+                            <label class="pt-auth-field" style="margin-top:10px;"><span>รูปโปรไฟล์ (JPG, PNG หรือ WEBP)</span><input type="file" accept="image/jpeg,image/png,image/webp" onchange="previewProfileImage(this)"></label>
+                            <p style="font-size:11px; color:#aeb7d2; margin:8px 0;">รูปจะถูกครอปเป็นสี่เหลี่ยมและย่อก่อนบันทึก</p>
+                            <button type="button" class="pt-auth-action" onclick="saveProfileDetails()">บันทึกโปรไฟล์</button>
+                        </section>
                         ${authState.cloudSyncEnabled ? '<section id="cloud-workspace-manager" class="pt-workspace-manager" aria-label="Cloud workspace manager"><div id="cloud-workspace-content"></div></section><section id="alert-center-manager" class="pt-alert-manager" aria-label="Cloud alert rules and in-app notification inbox"><div id="alert-center-content"></div></section>' : ''}
                         ${authState.cloudSyncEnabled ? `<details id="settings-details" class="pt-sync-note" style="margin:0"><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">${t('workspace_settings', 'Workspace settings')}</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>${t('theme', 'Theme')}</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>${t('language', 'Language')}</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>ไทย</option></select></label><label class="pt-tools-field"><span>${t('currency', 'Currency')}</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>${t('timeframe', 'Default timeframe')}</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">${t('auto_save', 'Changes save automatically to your cloud workspace.')}</p></details>` : ''}
                         <button type="button" class="pt-auth-action secondary" onclick="signOut()">Sign out</button>
@@ -4405,6 +4499,7 @@
                     renderCloudWorkspaceManager();
                     renderAlertCenter();
                 }
+                setProfileImagePreview(user.avatar_url || '');
                 return;
             }
 
@@ -4791,6 +4886,27 @@
                 noteEl.classList.toggle('positive', pnl > 0);
             }
             if (countEl) countEl.textContent = String(positions.length);
+            const totalPremium = positions.reduce((sum, position) => {
+                const premium = Number(position.premium_paid);
+                const quantity = Number(position.quantity);
+                return sum + (Number.isFinite(premium) && Number.isFinite(quantity) ? premium * quantity * 100 : 0);
+            }, 0);
+            const totalValue = totalPremium + pnl;
+            const roi = totalPremium > 0 ? (pnl / totalPremium) * 100 : 0;
+            const winners = positions.filter(position => Number(position.pnl) > 0).length;
+            const summary = document.getElementById('portfolio-summary');
+            if (summary) {
+                const metrics = [
+                    ['มูลค่ารวม', `$${totalValue.toFixed(2)}`],
+                    ['สัญญาที่ถืออยู่', String(positions.length)],
+                    ['Premium รวม', `$${totalPremium.toFixed(2)}`],
+                    ['กำไร / ขาดทุนรวม', `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`],
+                    ['กำไร / ขาดทุนวันนี้', `${pnl >= 0 ? '+' : '-'}$${Math.abs(pnl).toFixed(2)}`],
+                    ['ROI', `${roi.toFixed(2)}%`],
+                    ['อัตราการชนะ', positions.length ? `${((winners / positions.length) * 100).toFixed(0)}%` : '—'],
+                ];
+                summary.innerHTML = metrics.map(([label, value]) => `<div class="stat-box"><span>${label}</span><strong>${value}</strong></div>`).join('');
+            }
         }
 
         function updateHomeMarketSurface(stats = {}) {
@@ -5413,9 +5529,11 @@
             // repopulate a previous cloud account through a late refresh.
             // Auth-disabled deployments retain the legacy watchlist route.
             if (authState.configured === true && !authState.authenticated) {
-                watchlist = [];
-                renderWatchlist();
-                updateHomeWatchlistSurface();
+                setWatchlistItems([]);
+                return;
+            }
+            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
+                setWatchlistItems(localWatchlistItems());
                 return;
             }
             if (cloudWorkspaceEnabled()) {
@@ -5424,9 +5542,8 @@
                 if (loaded) {
                     syncSelectedCloudWatchlist();
                 } else {
-                    watchlist = [];
-                    renderWatchlist();
-                    updateHomeWatchlistSurface();
+                    setWatchlistItems([]);
+                    setWatchlistStatus('Unable to load the watchlist. Please retry.', 'error');
                 }
                 return;
             }
@@ -5435,10 +5552,51 @@
                 if (!res.ok) throw new Error(`Watchlist request failed: ${res.status}`);
                 const items = await res.json();
                 if (sessionEpoch !== authSessionEpoch) return;
-                watchlist = Array.isArray(items) ? items : [];
-                renderWatchlist();
-                updateHomeWatchlistSurface();
-            } catch (err) { console.error("Error fetching watchlist:", err); }
+                setWatchlistItems(items);
+            } catch (err) {
+                console.error("Error fetching watchlist:", err);
+                setWatchlistStatus('Unable to load the watchlist. Please retry.', 'error');
+            }
+        }
+
+        function setWatchlistStatus(message = '', tone = '') {
+            const status = document.getElementById('watchlist-status');
+            if (!status) return;
+            status.textContent = message;
+            status.style.color = tone === 'error' ? 'var(--red)' : tone === 'success' ? 'var(--green)' : 'var(--text-muted)';
+        }
+
+        function localWatchlistItems() {
+            try {
+                const parsed = JSON.parse(window.localStorage.getItem(LOCAL_WATCHLIST_STORAGE_KEY) || '[]');
+                return Array.isArray(parsed) ? parsed : [];
+            } catch (error) {
+                console.warn('Local watchlist could not be read:', error);
+                return [];
+            }
+        }
+
+        function saveLocalWatchlistItems(items) {
+            try {
+                window.localStorage.setItem(LOCAL_WATCHLIST_STORAGE_KEY, JSON.stringify(items));
+            } catch (error) {
+                console.warn('Local watchlist could not be saved:', error);
+                setWatchlistStatus('Unable to save the watchlist on this device.', 'error');
+            }
+        }
+
+        function setWatchlistItems(items) {
+            const unique = new Set();
+            watchlist = (Array.isArray(items) ? items : [])
+                .map(value => String(value || '').toUpperCase().trim())
+                .filter(ticker => /^[A-Z0-9.-]{1,12}$/.test(ticker))
+                .filter(ticker => {
+                    if (unique.has(ticker)) return false;
+                    unique.add(ticker);
+                    return true;
+                });
+            renderWatchlist();
+            updateHomeWatchlistSurface();
         }
 
         function renderWatchlist() {
@@ -5446,6 +5604,13 @@
             if (!container) return;
             container.replaceChildren();
             const items = Array.isArray(watchlist) ? watchlist : [];
+            if (!items.length) {
+                const empty = document.createElement('span');
+                empty.style.cssText = 'color:var(--text-muted); font-size:12px; padding:8px 0;';
+                empty.textContent = 'No saved symbols yet.';
+                container.appendChild(empty);
+                return;
+            }
             items.forEach(value => {
                 const ticker = String(value || '').toUpperCase().trim();
                 if (!/^[A-Z0-9.-]{1,12}$/.test(ticker)) return;
@@ -5966,20 +6131,36 @@
             if (cloudWorkspaceEnabled()) {
                 if (!selectedCloudWatchlist()) await loadCloudWorkspace();
                 if (selectedCloudWatchlist()) {
-                    await addTickerToSelectedCloudWatchlist(currentTicker);
+                    const result = await addTickerToSelectedCloudWatchlist(currentTicker);
+                    if (result) {
+                        syncSelectedCloudWatchlist();
+                        setWatchlistStatus(`${currentTicker} added to the watchlist.`, 'success');
+                    }
                     return;
                 }
                 setCloudWorkspaceStatus('Your cloud watchlist is unavailable. Try opening Profile and refreshing the workspace.', 'error');
+                setWatchlistStatus('Watchlist is unavailable. Please retry after refreshing your workspace.', 'error');
+                return;
+            }
+            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
+                const items = localWatchlistItems();
+                if (!items.includes(currentTicker)) items.push(currentTicker);
+                saveLocalWatchlistItems(items);
+                setWatchlistItems(items);
+                setWatchlistStatus(`${currentTicker} saved on this device until cloud storage is configured.`, 'success');
                 return;
             }
             try {
                 const res = await authFetch(`/api/watchlist?ticker=${encodeURIComponent(currentTicker)}`, {
                     method: 'POST', headers: authHeaders(),
                 });
-                if (!res.ok) throw new Error(`Watchlist update failed: ${res.status}`);
-                fetchWatchlist();
+                const items = await res.json().catch(() => null);
+                if (!res.ok) throw new Error(items?.detail || `Watchlist update failed: ${res.status}`);
+                setWatchlistItems(items);
+                setWatchlistStatus(`${currentTicker} added to the watchlist.`, 'success');
             } catch (err) {
                 console.error('Error adding watchlist item:', err);
+                setWatchlistStatus(err.message || 'Unable to add this symbol. Please try again.', 'error');
             }
         }
         async function deleteWatchlist(ticker) {
@@ -5993,6 +6174,14 @@
                     }
                     const result = await removeTickerFromSelectedCloudWatchlist(ticker);
                     if (result && wasCurrent) switchStock(watchlist[0] || 'NVDA');
+                    return;
+                }
+                if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
+                    const items = localWatchlistItems().filter(item => String(item).toUpperCase() !== String(ticker).toUpperCase());
+                    saveLocalWatchlistItems(items);
+                    setWatchlistItems(items);
+                    setWatchlistStatus(`${ticker} removed from the watchlist.`, 'success');
+                    if (wasCurrent) switchStock(watchlist[0] || 'NVDA');
                     return;
                 }
                 const res = await authFetch(`/api/watchlist/${encodeURIComponent(ticker)}`, {
@@ -6054,6 +6243,7 @@
 
         // --- 💼 Portfolio Engine Via API ---
         async function fetchPortfolio() {
+            if (portfolioRefreshInFlight) return;
             const sessionEpoch = authSessionEpoch;
             if (authState.configured === true && !authState.authenticated) {
                 activePositions = [];
@@ -6061,15 +6251,31 @@
                 updateHomePortfolioSurface();
                 return;
             }
+            portfolioRefreshInFlight = true;
             try {
+                setPositionFormStatus('กำลังอัปเดตพอร์ต…');
                 const res = await authFetch('/api/positions', { cache: 'no-store' });
                 if (!res.ok) throw new Error(`Portfolio request failed: ${res.status}`);
                 const positions = await res.json();
                 if (sessionEpoch !== authSessionEpoch) return;
-                activePositions = Array.isArray(positions) ? positions : [];
+                activePositions = Array.isArray(positions) ? positions.filter(position => position && Number.isFinite(Number(position.id))) : [];
                 renderPortfolioTable();
                 updateHomePortfolioSurface();
-            } catch (err) { console.error("Error fetching portfolio:", err); }
+                setPositionFormStatus(activePositions.length ? '' : 'ยังไม่มีสัญญาที่ถืออยู่');
+            } catch (err) {
+                console.error("Error fetching portfolio:", err);
+                setPositionFormStatus('โหลดพอร์ตไม่สำเร็จ กรุณาลองใหม่', 'error');
+            } finally {
+                portfolioRefreshInFlight = false;
+            }
+        }
+
+        function startPortfolioAutoRefresh() {
+            if (portfolioRefreshTimer) clearInterval(portfolioRefreshTimer);
+            portfolioRefreshTimer = window.setInterval(() => {
+                if (!isPageVisible || !isNetworkOnline || !activePositions.length) return;
+                void fetchPortfolio();
+            }, 5000);
         }
 
         function renderPortfolioTable() {
@@ -6080,7 +6286,7 @@
                 return Number.isFinite(number) ? number : null;
             };
             if (activePositions.length === 0) {
-                tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; color:var(--text-muted); padding:20px;">💼 พอร์ตว่างเปล่า ลองระบุเงื่อนไขด้านบนเพื่อเปิดสถานะสัญญาจำลอง</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; color:var(--text-muted); padding:20px;">ยังไม่มีสัญญาที่ถืออยู่ — กรอกข้อมูลด้านบนเพื่อเปิดสัญญา</td></tr>`;
                 return;
             }
             tbody.innerHTML = activePositions.map(p => {
@@ -6123,46 +6329,133 @@
 <td id="table-underlying-${p.id}" title="${staleUnderlying ? 'Live quote unavailable; showing entry price when available.' : 'Latest underlying price'}">${underlyingDisplay}</td>
 <td id="table-sellprice-${p.id}" style="font-weight:bold; color:${currentSellPrice === null ? 'var(--text-muted)' : 'var(--gold)'};">${currentSellPrice === null ? '—' : `$${currentSellPrice.toFixed(2)}`}</td>
 <td id="table-pnl-${p.id}" class="pnl-cell" style="color:${color}">${pnlDisplay}</td>
-<td><button style="background:rgba(255,59,48,0.1); color:var(--red); border:1px solid var(--red); padding:6px 10px; border-radius:4px; font-weight:bold; cursor:pointer;" onclick="closePosition(${p.id})">ปิดสัญญา</button></td>
+<td style="white-space:nowrap;"><button style="background:transparent; color:var(--blue); border:1px solid var(--blue); padding:6px 10px; border-radius:4px; font-weight:bold; cursor:pointer;" onclick="editPosition(${p.id})">แก้ไข</button> <button style="background:rgba(255,59,48,0.1); color:var(--red); border:1px solid var(--red); padding:6px 10px; border-radius:4px; font-weight:bold; cursor:pointer;" onclick="closePosition(${p.id})">ปิดสัญญา</button></td>
 </tr>
 `}).join('');
         }
 
-        async function submitPosition(e) {
-            e.preventDefault();
-            const payload = {
+        let editingPositionId = null;
+
+        function setPositionFormStatus(message = '', tone = '') {
+            const status = document.getElementById('position-form-status');
+            if (!status) return;
+            status.textContent = message;
+            status.style.color = tone === 'error' ? 'var(--red)' : tone === 'success' ? 'var(--green)' : 'var(--text-muted)';
+        }
+
+        function positionPayloadFromForm() {
+            return {
                 ticker: currentTicker,
-                strike_price: parseFloat(document.getElementById('form-strike').value),
+                strike_price: Number(document.getElementById('form-strike').value),
                 option_type: document.getElementById('form-type').value,
                 expiration: document.getElementById('form-exp').value,
-                premium_paid: parseFloat(document.getElementById('form-premium').value),
-                quantity: parseInt(document.getElementById('form-qty').value),
-                iv: parseFloat(document.getElementById('form-iv').value) || 0.0,
-                delta: parseFloat(document.getElementById('form-delta').value) || 0.0
+                premium_paid: Number(document.getElementById('form-premium').value),
+                quantity: Number(document.getElementById('form-qty').value),
+                iv: Number(document.getElementById('form-iv').value),
+                delta: Number(document.getElementById('form-delta').value),
             };
-            const portfolioId = cloudWorkspaceId(document.getElementById('form-portfolio-id')?.value);
-            if (cloudWorkspaceEnabled() && portfolioId) payload.portfolio_id = portfolioId;
+        }
 
-            const res = await authFetch('/api/positions', {
-                method: 'POST',
-                headers: authHeaders(true),
-                body: JSON.stringify(payload),
-            });
-            if (!res.ok) {
-                const error = await res.json().catch(() => ({}));
-                throw new Error(error.detail || 'Unable to add position.');
+        function validatePositionPayload(payload) {
+            if (!(payload.strike_price > 0)) return 'กรุณาระบุราคาใช้สิทธิที่มากกว่า 0';
+            if (!payload.expiration || new Date(`${payload.expiration}T00:00:00`) < new Date(new Date().toDateString())) return 'กรุณาระบุวันหมดอายุที่ไม่ใช่วันย้อนหลัง';
+            if (!(payload.premium_paid > 0)) return 'ค่า Premium ต้องมากกว่า 0';
+            if (!Number.isInteger(payload.quantity) || payload.quantity < 1) return 'จำนวนสัญญาต้องเป็นจำนวนเต็มมากกว่า 0';
+            if (!(payload.iv > 0)) return 'ค่า IV ต้องมากกว่า 0';
+            if (!(payload.delta >= -1 && payload.delta <= 1)) return 'ค่า Delta ต้องอยู่ระหว่าง -1 และ 1';
+            return '';
+        }
+
+        function positionErrorMessage(message) {
+            const raw = String(message || 'ไม่สามารถบันทึกสัญญาได้');
+            if (/strike_price|strike|greater than 0/i.test(raw)) return 'ราคาใช้สิทธิต้องมากกว่า 0';
+            if (/expiration|past/i.test(raw)) return 'กรุณาระบุวันหมดอายุที่ถูกต้องและไม่ใช่วันย้อนหลัง';
+            if (/premium/i.test(raw)) return 'ค่า Premium ต้องมากกว่า 0';
+            if (/quantity/i.test(raw)) return 'จำนวนสัญญาต้องมากกว่า 0';
+            if (/delta/i.test(raw)) return 'ค่า Delta ต้องอยู่ระหว่าง -1 และ 1';
+            if (/iv/i.test(raw)) return 'ค่า IV ต้องมากกว่า 0';
+            return raw;
+        }
+
+        function updatePortfolioState(position) {
+            if (!position || !Number.isFinite(Number(position.id))) return;
+            const index = activePositions.findIndex(item => Number(item && item.id) === Number(position.id));
+            if (index >= 0) activePositions.splice(index, 1, position);
+            else activePositions.unshift(position);
+            renderPortfolioTable();
+            updateHomePortfolioSurface();
+        }
+
+        async function submitPosition(e) {
+            e.preventDefault();
+            const payload = positionPayloadFromForm();
+            const validationMessage = validatePositionPayload(payload);
+            if (validationMessage) { setPositionFormStatus(validationMessage, 'error'); return; }
+            const portfolioId = cloudWorkspaceId(document.getElementById('form-portfolio-id')?.value);
+            if (!editingPositionId && cloudWorkspaceEnabled() && portfolioId) payload.portfolio_id = portfolioId;
+            const submit = document.querySelector('#pos-form .btn-submit');
+            if (submit) submit.disabled = true;
+            setPositionFormStatus(editingPositionId ? 'กำลังบันทึกการแก้ไข…' : 'กำลังเปิดสัญญา…');
+            try {
+                const url = editingPositionId ? `/api/positions/${editingPositionId}` : '/api/positions';
+                const requestPayload = editingPositionId ? (({ ticker, portfolio_id, ...editable }) => editable)(payload) : payload;
+                const res = await authFetch(url, { method: editingPositionId ? 'PATCH' : 'POST', headers: authHeaders(true), body: JSON.stringify(requestPayload) });
+                const saved = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(positionErrorMessage(saved.detail));
+                updatePortfolioState(saved);
+                const wasEditing = Boolean(editingPositionId);
+                cancelPositionEdit();
+                setPositionFormStatus(wasEditing ? 'บันทึกการแก้ไขแล้ว' : 'เปิดสัญญาและอัปเดตพอร์ตแล้ว', 'success');
+                await fetchPortfolio();
+            } catch (error) {
+                console.error('Position save failed:', error);
+                setPositionFormStatus(error.message || 'ไม่สามารถบันทึกสัญญาได้', 'error');
+            } finally {
+                if (submit) submit.disabled = false;
             }
+        }
+
+        function editPosition(id) {
+            const position = activePositions.find(item => Number(item && item.id) === Number(id));
+            if (!position) return;
+            editingPositionId = Number(id);
+            document.getElementById('form-strike').value = position.strike_price;
+            document.getElementById('form-type').value = position.option_type;
+            document.getElementById('form-exp').value = position.expiration;
+            document.getElementById('form-premium').value = position.premium_paid;
+            document.getElementById('form-qty').value = position.quantity;
+            document.getElementById('form-iv').value = position.iv;
+            document.getElementById('form-delta').value = position.delta;
+            document.querySelector('#pos-form .btn-submit').textContent = 'บันทึกการแก้ไข';
+            document.getElementById('position-cancel-edit').style.display = '';
+            setPositionFormStatus(`กำลังแก้ไขสัญญา ${position.ticker}`);
+            document.getElementById('form-strike').focus();
+        }
+
+        function cancelPositionEdit() {
+            editingPositionId = null;
             document.getElementById('pos-form').reset();
             updatePositionPortfolioSelector();
-            fetchPortfolio();
+            const submit = document.querySelector('#pos-form .btn-submit');
+            if (submit) submit.textContent = 'เปิดสัญญา';
+            const cancel = document.getElementById('position-cancel-edit');
+            if (cancel) cancel.style.display = 'none';
         }
 
         async function closePosition(id) {
-            const res = await authFetch(`/api/positions/${id}`, {
-                method: 'DELETE', headers: authHeaders(),
-            });
-            if (!res.ok) throw new Error('Unable to close position.');
-            fetchPortfolio();
+            try {
+                const res = await authFetch(`/api/positions/${id}`, { method: 'DELETE', headers: authHeaders() });
+                const result = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(result.detail || 'ไม่สามารถปิดสัญญาได้');
+                activePositions = activePositions.filter(item => Number(item && item.id) !== Number(id));
+                renderPortfolioTable();
+                updateHomePortfolioSurface();
+                setPositionFormStatus('ปิดสัญญาและอัปเดตพอร์ตแล้ว', 'success');
+                await fetchPortfolio();
+            } catch (error) {
+                console.error('Position close failed:', error);
+                setPositionFormStatus(error.message || 'ไม่สามารถปิดสัญญาได้', 'error');
+            }
         }
 
         // --- ⚡ Real-Time WebSocket Connection ---
@@ -6404,6 +6697,10 @@
                 const pnl = (currentPremium - initialPremium) * 100 * position.quantity;
                 const principal = initialPremium * position.quantity * 100;
                 const pnlPercent = principal > 0 ? (pnl / principal) * 100 : 0;
+                position.current_underlying_price = currentLivePrice;
+                position.current_option_premium = currentPremium;
+                position.pnl = pnl;
+                position.pnl_percent = pnlPercent;
                 const cellPrice = document.getElementById(`table-underlying-${position.id}`);
                 const cellPnl = document.getElementById(`table-pnl-${position.id}`);
                 const cellSellPrice = document.getElementById(`table-sellprice-${position.id}`);
@@ -6415,6 +6712,7 @@
                     cellPnl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
                 }
             });
+            updateHomePortfolioSurface();
         }
 
         function initWebSocket(context = currentViewContext()) {
@@ -6526,11 +6824,13 @@
             closeLivePriceSocket(false);
             invalidateViewRequests();
             stopAlertCenterPolling();
+            if (portfolioRefreshTimer) clearInterval(portfolioRefreshTimer);
         });
         window.addEventListener('pageshow', () => {
             isPageVisible = true;
             isNetworkOnline = navigator.onLine;
             requestTerminalResync();
+            startPortfolioAutoRefresh();
             if (alertCenterEnabled()) {
                 void refreshAlertCenter({ quiet: true });
                 startAlertCenterPolling();
@@ -7113,6 +7413,7 @@
         }
 
         async function loadFullGauges(context) {
+            if (typeof context === 'string') context = { ...currentViewContext(), ticker: context };
             if (!isCurrentView(context)) return;
             if (gaugesAbortController && !gaugesAbortController.signal.aborted) {
                 gaugesAbortController.abort();
@@ -7121,22 +7422,28 @@
             gaugesAbortController = controller;
             const gaugeContext = { ...context, signal: controller.signal };
             const grid = document.getElementById('full-gauges-grid');
+            const badge = document.getElementById('gauges-confidence-badge');
+            if (!grid || !badge) return;
             const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
                 '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
             }[char]));
 
+            grid.innerHTML = '<div style="grid-column: 1 / -1; font-size:12px; color:var(--text-muted);">Loading gauges…</div>';
             try {
                 const res = await authFetch(`/api/gauges?ticker=${encodeURIComponent(gaugeContext.ticker)}`, {
                     signal: gaugeContext.signal,
                     cache: 'no-store',
                 });
                 if (!isCurrentView(gaugeContext)) return;
-                if (!res.ok) throw new Error(`Gauges request failed: ${res.status}`);
-                const data = await res.json();
+                const data = await res.json().catch(() => null);
                 if (!isCurrentView(gaugeContext)) return;
-                const gauges = data.gauges || {};
+                if (!res.ok) throw new Error(data?.detail || `Gauges request failed: ${res.status}`);
+                if (!data || typeof data !== 'object' || !data.gauges || typeof data.gauges !== 'object') {
+                    throw new Error('Gauge data was unavailable.');
+                }
+                const gauges = data.gauges;
                 const conf = gauges.confidence_score;
-                document.getElementById('gauges-confidence-badge').innerText =
+                badge.innerText =
                     conf && conf.score !== null ? `${conf.score}% data-backed` : '-';
 
                 grid.innerHTML = Object.entries(GAUGE_LABELS).map(([key, label]) => {
@@ -7160,7 +7467,9 @@
             } catch (err) {
                 if (!isAbortError(err) && isCurrentView(gaugeContext)) {
                     console.error('Gauges fetch error:', err);
-                    grid.innerHTML = '<div style="font-size:12px; color:var(--red);">Unable to load gauges.</div>';
+                    badge.innerText = 'Unavailable';
+                    const detail = escapeHtml(err.message || 'Unable to load gauges.');
+                    grid.innerHTML = `<div style="grid-column:1 / -1; font-size:12px; color:var(--red);">${detail} <button type="button" onclick="loadFullGauges(currentViewContext())" style="margin-left:8px; border:1px solid var(--red); background:transparent; color:var(--red); border-radius:4px; cursor:pointer;">Retry</button></div>`;
                 }
             } finally {
                 if (gaugesAbortController === controller) gaugesAbortController = null;
@@ -7445,6 +7754,7 @@
                 await fetchDashboardData();
                 applyRouteFromLocation();
                 startChartAutoRefresh();
+                startPortfolioAutoRefresh();
             } catch (error) {
                 console.error('Quantora could not start:', error);
                 showSystemScreen('Unable to start Quantora AI', 'Check your connection, then try loading the workspace again.');

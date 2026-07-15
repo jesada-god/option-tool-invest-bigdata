@@ -760,6 +760,44 @@ def close_option_position(session: Session, *, profile_id: uuid.UUID, position_i
     return position
 
 
+def update_option_position(
+    session: Session,
+    *,
+    profile_id: uuid.UUID,
+    position_id: int,
+    strike_price: float,
+    option_type: str,
+    expiration: str,
+    premium_paid: float,
+    quantity: int,
+    iv: float,
+    delta: float,
+) -> Position | None:
+    """Update only an owned, open option position in the caller transaction."""
+    position = session.scalar(
+        select(Position)
+        .join(Portfolio, Position.portfolio_id == Portfolio.id)
+        .where(
+            Position.id == position_id,
+            Portfolio.profile_id == profile_id,
+            Position.is_open.is_(True),
+            Position.asset_type == "option",
+        )
+    )
+    if position is None:
+        return None
+    position.strike_price = _decimal(strike_price, "strike_price")
+    position.option_type = option_type.upper()
+    position.expiration = date.fromisoformat(expiration)
+    position.average_cost = _decimal(premium_paid, "premium_paid")
+    position.quantity = _decimal(quantity, "quantity")
+    metadata = dict(position.metadata_json or {})
+    metadata.update({"iv": float(iv), "delta": float(delta), "premium_paid": float(premium_paid)})
+    position.metadata_json = metadata
+    session.flush()
+    return position
+
+
 def legacy_position_payload(position: Position) -> dict[str, Any]:
     metadata = position.metadata_json or {}
     ticker = position.underlying_ticker or position.ticker

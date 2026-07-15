@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import asyncio
 import contextlib
 import os
@@ -139,6 +139,7 @@ from app.cloud_service import (
     rename_portfolio,
     reorder_watchlist_items,
     remove_default_watchlist_ticker,
+    update_option_position,
     update_watchlist,
     update_preferences,
     watchlist_item_payload,
@@ -404,8 +405,8 @@ class ValidatedPositionModel(BaseModel):
     expiration: str
     premium_paid: float = Field(gt=0)
     quantity: int = Field(gt=0, le=10_000)
-    iv: float = Field(default=0.0, ge=0, le=1_000)
-    delta: float = Field(default=0.0, ge=-1.5, le=1.5)
+    iv: float = Field(gt=0, le=1_000)
+    delta: float = Field(ge=-1, le=1)
     portfolio_id: Optional[int] = Field(default=None, gt=0)
 
     @field_validator("ticker")
@@ -428,9 +429,37 @@ class ValidatedPositionModel(BaseModel):
     @classmethod
     def validate_expiration(cls, value: str) -> str:
         try:
-            return datetime.strptime(value, "%Y-%m-%d").date().isoformat()
+            expiration = datetime.strptime(value, "%Y-%m-%d").date()
         except (TypeError, ValueError) as exc:
             raise ValueError("expiration must be YYYY-MM-DD") from exc
+        if expiration < date.today():
+            raise ValueError("expiration cannot be in the past")
+        return expiration.isoformat()
+
+
+class PositionUpdateModel(BaseModel):
+    """Validated editable fields for an already-open option contract."""
+
+    strike_price: float = Field(gt=0)
+    option_type: str
+    expiration: str
+    premium_paid: float = Field(gt=0)
+    quantity: int = Field(gt=0, le=10_000)
+    iv: float = Field(gt=0, le=1_000)
+    delta: float = Field(ge=-1, le=1)
+
+    @field_validator("option_type")
+    @classmethod
+    def validate_option_type(cls, value: str) -> str:
+        option_type = str(value).upper().strip()
+        if option_type not in {"CALL", "PUT"}:
+            raise ValueError("option_type must be CALL or PUT")
+        return option_type
+
+    @field_validator("expiration")
+    @classmethod
+    def validate_expiration(cls, value: str) -> str:
+        return ValidatedPositionModel.validate_expiration(value)
 
 
 class AuthCredentialsModel(BaseModel):
@@ -492,15 +521,35 @@ class PasswordUpdateModel(BaseModel):
 class ProfileUpdateModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    username: str = Field(min_length=3, max_length=32)
+    username: Optional[str] = Field(default=None, min_length=3, max_length=32)
+    avatar_url: Optional[str] = Field(default=None, max_length=262_144)
+
+    @model_validator(mode="after")
+    def require_update(self):
+        if self.username is None and self.avatar_url is None:
+            raise ValueError("provide a username or profile image")
+        return self
 
     @field_validator("username")
     @classmethod
-    def validate_username(cls, value: str) -> str:
+    def validate_username(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
         username = value.strip()
         if not re.fullmatch(r"[A-Za-z0-9_.-]{3,32}", username):
             raise ValueError("username may use only letters, numbers, dots, underscores, and hyphens")
         return username
+
+    @field_validator("avatar_url")
+    @classmethod
+    def validate_avatar_url(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        # The browser crops and downscales before upload.  Keep the durable
+        # representation self-contained and reject arbitrary remote URLs.
+        if not re.fullmatch(r"data:image/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+", value):
+            raise ValueError("profile image must be a JPG, PNG, or WEBP data URL")
+        return value
 
 
 class PreferenceUpdateModel(BaseModel):
@@ -1845,9 +1894,18 @@ def update_me(payload: ProfileUpdateModel, request: Request, response: Response)
             ensure_cloud_workspace(
                 session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url
             )
-            profile = ProfileRepository().complete_onboarding(
-                session, profile_id=user.id, username=payload.username
-            )
+            repository = ProfileRepository()
+            profile = repository.get(session, user.id)
+            if profile is None:
+                raise HTTPException(status_code=404, detail="Profile not found.")
+            if payload.username is not None:
+                profile = repository.complete_onboarding(
+                    session, profile_id=user.id, username=payload.username
+                )
+            if payload.avatar_url is not None:
+                profile.avatar_url = payload.avatar_url
+                session.flush()
+            logger.info("Profile updated user=%s name=%s avatar=%s", user.id, payload.username is not None, payload.avatar_url is not None)
             return {"user": profile_payload(profile)}
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -2938,6 +2996,7 @@ def enrich_option_position(position: dict[str, Any]) -> dict[str, Any]:
         "market_data_stale": False,
         "valuation_source": valuation_source,
     })
+    return pos
 
 
 @app.get("/api/ai-recommendation")
@@ -3106,7 +3165,9 @@ def get_positions(request: Request, response: Response):
         for stored, enriched in zip(logged_positions, enriched_positions):
             stored.update(enriched)
         return sanitize_json(enriched_positions)
-    return sanitize_json([enrich_option_position(item) for item in get_cloud_option_positions(user)])
+    positions = [enrich_option_position(item) for item in get_cloud_option_positions(user)]
+    logger.debug("Portfolio read user=%s open_positions=%d", user.id, len(positions))
+    return sanitize_json(positions)
 
 
 @app.post("/api/positions")
@@ -3153,7 +3214,41 @@ def add_position(pos: ValidatedPositionModel, request: Request, response: Respon
         f"\n[Open option]\nTicker: {pos.ticker} ({pos.option_type})"
         f"\nStrike: ${pos.strike_price}\nContracts: {pos.quantity}"
     )
-    return sanitize_json(enrich_option_position(new_pos))
+    enriched = enrich_option_position(new_pos)
+    logger.info("Option position opened user=%s position_id=%s ticker=%s", getattr(user, "id", "legacy"), new_pos["id"], pos.ticker)
+    return sanitize_json(enriched)
+
+
+@app.patch("/api/positions/{pos_id}")
+def update_position(pos_id: int, payload: PositionUpdateModel, request: Request, response: Response):
+    """Edit an open contract and return its immediately revalued representation."""
+    user = get_cloud_user_or_legacy(request, response, mutate=True)
+    if user is None:
+        position = next((item for item in logged_positions if item["id"] == pos_id), None)
+        if position is None:
+            raise HTTPException(status_code=404, detail="Position not found.")
+        position.update(payload.model_dump())
+        updated = position
+    else:
+        with session_scope() as session:
+            ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+            stored = update_option_position(
+                session,
+                profile_id=user.id,
+                position_id=pos_id,
+                strike_price=payload.strike_price,
+                option_type=payload.option_type,
+                expiration=payload.expiration,
+                premium_paid=payload.premium_paid,
+                quantity=payload.quantity,
+                iv=payload.iv,
+                delta=payload.delta,
+            )
+            if stored is None:
+                raise HTTPException(status_code=404, detail="Position not found.")
+            updated = legacy_position_payload(stored)
+    logger.info("Option position edited user=%s position_id=%s", getattr(user, "id", "legacy"), pos_id)
+    return sanitize_json(enrich_option_position(updated))
 
 
 @app.delete("/api/positions/{pos_id}")
@@ -3182,6 +3277,7 @@ def close_position(pos_id: int, request: Request, response: Response):
         f"\n[Close option]\nTicker: {marked['ticker']} ({marked['option_type']})"
         f"\nP&L: {marked.get('pnl', 'unavailable')}"
     )
+    logger.info("Option position closed user=%s position_id=%s", getattr(user, "id", "legacy"), pos_id)
     return {"status": "success", "position": sanitize_json(marked)}
 
 
@@ -3301,17 +3397,44 @@ def get_gauges(
 ):
     try:
         ticker = normalize_ticker(ticker)
-        stats = stats_engine.analyze_key_statistics(ticker)
+        try:
+            stats = stats_engine.analyze_key_statistics(ticker)
+        except Exception as exc:
+            # A gauge can still render its explicitly unavailable states when
+            # a market-data provider is temporarily down; this public widget
+            # must not turn that into a blank panel.
+            logger.warning("Gauge statistics unavailable for %s: %s", ticker, exc)
+            stats = {
+                "indicators": {},
+                "ratings": {},
+                "current_iv": None,
+                "iv_history": [],
+            }
 
-        user = get_cloud_user_or_legacy(request, response)
-        position_source = logged_positions if user is None else get_cloud_option_positions(user)
-        ticker_positions = [p for p in position_source if p["ticker"].upper() == ticker]
+        # Gauges are public analysis.  Cloud storage is optional enrichment
+        # for portfolio Greeks, not a prerequisite for rendering the suite.
+        try:
+            user = get_cloud_user_or_legacy(request, response)
+            position_source = logged_positions if user is None else get_cloud_option_positions(user)
+        except HTTPException as exc:
+            if exc.status_code not in {401, 503}:
+                raise
+            logger.info("Gauge portfolio context unavailable for %s: %s", ticker, exc.detail)
+            position_source = []
+        ticker_positions = [
+            position for position in position_source
+            if isinstance(position, dict) and str(position.get("ticker") or "").upper() == ticker
+        ]
         pg = portfolio_engine.compute_portfolio_greeks(ticker_positions, get_underlying_price=get_base_price)
         portfolio_greeks = None
         if pg["position_count"] > 0:
             portfolio_greeks = {"net_theta": pg["net_theta"], "net_vega": pg["net_vega"], "net_gamma": pg["net_gamma"]}
 
-        chain_summary = get_options_chain_summary(ticker)
+        try:
+            chain_summary = get_options_chain_summary(ticker)
+        except Exception as exc:
+            logger.warning("Gauge options-chain enrichment unavailable for %s: %s", ticker, exc)
+            chain_summary = None
         current_iv = stats.get("current_iv") or 0.30
 
         gauges = gauges_engine.compute_gauges(
@@ -3323,6 +3446,7 @@ def get_gauges(
             account_size=account_size,
             options_chain_summary=chain_summary,
         )
+        logger.debug("Gauge suite rendered ticker=%s gauges=%d", ticker, len(gauges))
         return sanitize_json({"ticker": ticker, "gauges": gauges, "portfolio_context": pg})
     except HTTPException:
         # Authentication, authorization, validation, and data-unavailable

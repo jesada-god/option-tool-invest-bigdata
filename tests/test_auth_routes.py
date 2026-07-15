@@ -64,3 +64,7 @@ class AuthRouteTests(unittest.TestCase):
         ):
             self.assertIn(path, paths)
 
+    def test_option_position_routes_include_editing(self):
+        routes = {(route.path, method) for route in main.app.routes for method in getattr(route, "methods", set())}
+        self.assertIn(("/api/positions", "POST"), routes)
+        self.assertIn(("/api/positions/{pos_id}", "PATCH"), routes)

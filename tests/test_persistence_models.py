@@ -68,6 +68,7 @@ class PersistenceSchemaTests(unittest.TestCase):
         self.assertIn("uq_portfolios_one_default_per_profile", portfolio_indexes)
         self.assertIn("uq_watchlists_one_default_per_profile", watchlist_indexes)
         self.assertIn("ix_positions_portfolio_open", position_indexes)
+        self.assertIn("ix_positions_portfolio_option_opened", position_indexes)
         self.assertIn("ix_positions_ticker", position_indexes)
         self.assertIn("ix_alerts_profile_enabled", alert_indexes)
         self.assertIn("uq_notification_events_profile_dedupe", notification_indexes)
