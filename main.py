@@ -1399,6 +1399,21 @@ def get_raw_history(ticker: str, timeframe: str) -> pd.DataFrame:
 
     return hist
 
+
+@ttl_cache(ttl_seconds=120)
+def get_recent_daily_history(ticker: str) -> pd.DataFrame:
+    """A short daily window for market-activity ranking.
+
+    Ranking must use the prior completed close rather than a provider's
+    ``prev_close`` fallback, which can equal the current quote and produce a
+    misleading +0.00% card outside regular market hours.
+    """
+    try:
+        hist = yf.Ticker(ticker).history(period="2mo", interval="1d", prepost=False)
+        return hist if hist is not None and not hist.empty else pd.DataFrame()
+    except Exception:
+        return pd.DataFrame()
+
 @ttl_cache(ttl_seconds=300)
 def get_atr_for_timeframe(ticker: str, timeframe: str, period: int = 14):
     hist = get_raw_history(ticker, timeframe)
@@ -2013,6 +2028,73 @@ def get_category_instruments(category: str, limit: int = Query(50, ge=1, le=50))
             for instrument in list_instruments_by_category(category, limit=limit)
         ],
     }
+
+
+# Category activity is derived from multiple liquid catalog constituents. The
+# score combines absolute daily move, relative volume, and directional breadth;
+# it is a transparent attention proxy, not an assertion of total market flow.
+TRENDING_INDUSTRY_CATEGORIES: tuple[tuple[str, str], ...] = (
+    ("AI", "AI"),
+    ("Semiconductor", "Semiconductor"),
+    ("Technology", "Technology"),
+    ("Healthcare", "Healthcare"),
+    ("Banking", "Bank"),
+    ("Energy", "Energy"),
+    ("Crypto", "Crypto"),
+    ("Defense", "Defense"),
+)
+
+
+@ttl_cache(ttl_seconds=120)
+def build_industry_trends() -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    for display_name, category in TRENDING_INDUSTRY_CATEGORIES:
+        instruments = list_instruments_by_category(category, limit=4)
+        changes: list[float] = []
+        volume_ratios: list[float] = []
+        latest_dates: list[str] = []
+        for instrument in instruments:
+            history = get_recent_daily_history(instrument.symbol)
+            if history is None or history.empty or "Close" not in history.columns:
+                continue
+            closes = history["Close"].dropna()
+            if len(closes) < 2 or float(closes.iloc[-2]) <= 0:
+                continue
+            changes.append(float((closes.iloc[-1] / closes.iloc[-2] - 1) * 100))
+            latest_dates.append(str(closes.index[-1].date()))
+            if "Volume" in history.columns:
+                volumes = history["Volume"].dropna()
+                baseline = volumes.iloc[-21:-1]
+                if len(baseline) >= 5 and float(baseline.mean()) > 0:
+                    volume_ratios.append(float(volumes.iloc[-1] / baseline.mean()))
+
+        performance = float(sum(changes) / len(changes)) if changes else None
+        bullish_count = sum(change > 0 for change in changes)
+        breadth = bullish_count / len(changes) if changes else 0.5
+        relative_volume = float(sum(volume_ratios) / len(volume_ratios)) if volume_ratios else 1.0
+        activity_score = (
+            abs(performance or 0.0) * 20.0
+            + min(max(relative_volume, 0.0), 5.0) * 10.0
+            + breadth * 10.0
+        ) if changes else -1.0
+        momentum = "Bullish" if performance is not None and performance > 0.05 else "Bearish" if performance is not None and performance < -0.05 else "Neutral"
+        items.append({
+            "name": display_name,
+            "category": category,
+            "performance_pct": round(performance, 2) if performance is not None else None,
+            "stock_count": len(list_instruments_by_category(category)),
+            "sample_size": len(changes),
+            "relative_volume": round(relative_volume, 2) if changes else None,
+            "momentum": momentum,
+            "activity_score": round(activity_score, 2) if changes else None,
+            "as_of": max(latest_dates) if latest_dates else None,
+        })
+    return sorted(items, key=lambda item: (item["activity_score"] is not None, item["activity_score"] or -1.0), reverse=True)
+
+
+@app.get("/api/industry-trends")
+def get_industry_trends():
+    return {"items": build_industry_trends(), "method": "daily move + relative volume + breadth"}
 
 
 # ---------------------------------------------------------------------------

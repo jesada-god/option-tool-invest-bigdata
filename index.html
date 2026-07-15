@@ -2126,6 +2126,33 @@
         .pt-industry-detail { display:block; overflow:hidden; margin-top:4px; color:#a6b0cc; font-size:9px; text-overflow:ellipsis; white-space:nowrap; }
         .pt-category-instrument .pt-category-price { color:#f3f5ff; font-family:ui-monospace, SFMono-Regular, Menlo, monospace; font-size:10px; font-weight:750; }
         .pt-category-instrument .pt-category-sr { color:#80bfff; }
+        .pt-category-rail { min-width: 0; max-width: 100%; overflow: hidden; container-type: inline-size; }
+        .pt-category-chips { max-width: 100%; padding-bottom: 5px; overscroll-behavior-inline: contain; -webkit-overflow-scrolling: touch; }
+        .pt-category-chip { font-size: clamp(9px, 2.6vw, 10px); }
+        .pt-category-instruments { grid-template-columns: repeat(auto-fit, minmax(min(100%, 172px), 1fr)); }
+        .pt-category-instrument { min-height: 86px; overflow: hidden; }
+        @container (max-width: 560px) {
+            .pt-category-instruments { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+            .pt-category-instrument { min-height: 82px; padding: 8px; }
+            .pt-category-instrument strong { font-size: 11px; }
+        }
+        @container (max-width: 350px) {
+            .pt-category-instruments { grid-template-columns: 1fr; }
+        }
+        /* Fallbacks for browsers that do not support container queries yet. */
+        @media (max-width: 560px) {
+            .pt-category-rail { padding: 10px; }
+            .pt-category-head { align-items: flex-start; }
+            .pt-category-head h3 { font-size: clamp(13px, 4vw, 15px); }
+            .pt-category-source { white-space: normal; text-align: right; }
+            .pt-category-instruments { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px; }
+            .pt-category-instrument { min-height: 82px; padding: 8px; }
+        }
+        @media (max-width: 350px) {
+            .pt-category-head { display: block; }
+            .pt-category-source { display: block; margin-top: 5px; text-align: left; }
+            .pt-category-instruments { grid-template-columns: 1fr; }
+        }
         .pt-recent-card { grid-column: 1 / -1; }
         .pt-recent-head { display:flex; align-items:center; justify-content:space-between; gap:10px; }
         .pt-recent-head h3 { margin:0; color:#f5f6ff; font-size:14px; }
@@ -2212,6 +2239,7 @@
             <span>Quantora <em style="font-style:normal; color:#9dafff;">AI</em></span>
         </div>
         <div class="pt-appbar-actions">
+            <button id="app-settings-button" class="pt-icon-button" type="button" title="Settings" aria-label="Settings" onclick="openSettingsSheet()">⚙</button>
             <button id="notification-center-button" class="pt-icon-button pt-alert-notification-trigger" type="button" title="Notifications" aria-label="Notifications" onclick="openNotificationInbox()">◌<span id="notification-top-badge" class="pt-alert-top-badge" hidden></span></button>
             <button class="pt-avatar-button" id="profile-avatar-button" type="button" title="Open profile" aria-label="Open profile" onclick="openProfileSheet()">QA</button>
         </div>
@@ -2219,7 +2247,7 @@
 
     <section class="pt-home-surface" id="home-section" aria-label="Portfolio overview">
         <article class="pt-welcome-card">
-            <p class="pt-eyebrow">Your investment operating system</p>
+            <p class="pt-eyebrow" data-i18n="home_kicker">Your investment operating system</p>
             <h1 id="home-welcome-title">Welcome to <span>Quantora AI</span></h1>
             <p class="pt-welcome-copy" id="home-welcome-copy">Welcome to your portfolio. Live market analysis, Smart Support &amp; Resistance, option tools, and portfolio intelligence in one premium workspace.</p>
             <div class="pt-inline-actions">
@@ -2230,8 +2258,8 @@
 
         <section class="pt-trending-industries" aria-labelledby="trending-industries-title">
             <div class="pt-trending-header">
-                <h2 id="trending-industries-title">Top 8 Trending Industries</h2>
-                <span>Live category proxies</span>
+                <h2 id="trending-industries-title" data-i18n="trending_industries">Top 8 Trending Industries</h2>
+                <span data-i18n="market_activity">Ranked by market activity</span>
             </div>
             <div id="trending-industries-list" style="display:contents" aria-live="polite"></div>
         </section>
@@ -2267,8 +2295,8 @@
         <article class="pt-category-rail" aria-labelledby="category-rail-title">
             <div class="pt-category-head">
                 <div>
-                    <h3 id="category-rail-title">Explore market categories</h3>
-                    <p>Live price with the nearest Weekly Smart S/R level.</p>
+                    <h3 id="category-rail-title" data-i18n="market_categories">Explore market categories</h3>
+                    <p data-i18n="category_description">Live price with the nearest Weekly Smart S/R level.</p>
                 </div>
                 <span class="pt-category-source">Catalog</span>
             </div>
@@ -2278,11 +2306,11 @@
             </div>
         </article>
         <article class="pt-glass-card pt-recent-card" aria-labelledby="recent-viewed-title">
-            <div class="pt-recent-head"><h3 id="recent-viewed-title">Recently viewed</h3><span class="pt-category-source">Cloud synced</span></div>
+            <div class="pt-recent-head"><h3 id="recent-viewed-title" data-i18n="recently_viewed">Recently viewed</h3><span class="pt-category-source" data-i18n="cloud_synced">Cloud synced</span></div>
             <div id="recent-viewed-list" class="pt-recent-list"><p class="pt-empty-copy">Open an instrument to build your personal research trail.</p></div>
         </article>
         <article class="pt-glass-card pt-recent-card" aria-labelledby="market-movers-title">
-            <div class="pt-recent-head"><h3 id="market-movers-title">Industry movers</h3><span class="pt-category-source">Category performance</span></div>
+            <div class="pt-recent-head"><h3 id="market-movers-title" data-i18n="industry_movers">Industry movers</h3><span class="pt-category-source" data-i18n="category_performance">Category performance</span></div>
             <div id="industry-movers" class="pt-movers-grid"><p class="pt-empty-copy">Loading market movers…</p></div>
         </article>
     </section>
@@ -2313,11 +2341,11 @@
     <div class="watchlist-container" id="watchlist-row"></div>
 
     <nav class="pt-stock-tabs" aria-label="Stock analysis sections" role="tablist">
-        <button class="pt-stock-tab is-active" type="button" role="tab" aria-selected="true" data-stock-tab="overview" onclick="openStockWorkspaceTab('overview', this)">Overview</button>
-        <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="company" onclick="openStockWorkspaceTab('company', this)">Company</button>
-        <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="financial" onclick="openStockWorkspaceTab('financial', this)">Financial</button>
-        <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="news" onclick="openStockWorkspaceTab('news', this)">News</button>
-        <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="forecast" onclick="openStockWorkspaceTab('forecast', this)">Forecast</button>
+        <button class="pt-stock-tab is-active" type="button" role="tab" aria-selected="true" data-stock-tab="overview" data-i18n="overview" onclick="openStockWorkspaceTab('overview', this)">Overview</button>
+        <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="company" data-i18n="company" onclick="openStockWorkspaceTab('company', this)">Company</button>
+        <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="financial" data-i18n="financial" onclick="openStockWorkspaceTab('financial', this)">Financial</button>
+        <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="news" data-i18n="news" onclick="openStockWorkspaceTab('news', this)">News</button>
+        <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="forecast" data-i18n="forecast" onclick="openStockWorkspaceTab('forecast', this)">Forecast</button>
         <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="options" onclick="openStockWorkspaceTab('options', this)">Options</button>
         <button class="pt-stock-tab" type="button" role="tab" aria-selected="false" data-stock-tab="simulator" onclick="openStockWorkspaceTab('simulator', this)">Simulator</button>
     </nav>
@@ -2648,6 +2676,22 @@
         let terminalResyncTimer = null;
         let preferenceSyncTimer = null;
         let userPreferences = { theme: 'dark', language: 'en', currency: 'USD', timezone: 'UTC', default_timeframe: '1d', default_indicator: 'Smart S/R' };
+        const UI_TRANSLATIONS = Object.freeze({
+            th: {
+                home_kicker: 'ศูนย์รวมเครื่องมือการลงทุนของคุณ',
+                trending_industries: '8 กลุ่มอุตสาหกรรมที่น่าสนใจ',
+                live_proxies: 'อ้างอิงข้อมูลตลาดล่าสุด', market_activity: 'เรียงตามความสนใจของตลาด',
+                market_categories: 'สำรวจหมวดหุ้น',
+                category_description: 'ราคาและแนวรับแนวต้านรายสัปดาห์ที่ใกล้ที่สุด',
+                recently_viewed: 'ดูล่าสุด', cloud_synced: 'ซิงก์บนคลาวด์',
+                industry_movers: 'กลุ่มที่ราคาขยับเด่น', category_performance: 'ผลตอบแทนตามหมวด',
+                overview: 'ภาพรวม', company: 'บริษัท', financial: 'การเงิน', news: 'ข่าว', forecast: 'แนวโน้ม',
+                home: 'หน้าหลัก', watchlist: 'รายการติดตาม', search: 'ค้นหา', tools: 'เครื่องมือ', portfolio: 'พอร์ต', profile: 'โปรไฟล์',
+                favorite: 'รายการโปรด', favorited: 'บันทึกเป็นรายการโปรดแล้ว',
+                workspace_settings: 'ตั้งค่าการใช้งาน', theme: 'ธีม', language: 'ภาษา', currency: 'สกุลเงิน', timeframe: 'ช่วงเวลาเริ่มต้น',
+                auto_save: 'บันทึกการเปลี่ยนแปลงให้โดยอัตโนมัติบนคลาวด์',
+            },
+        });
         let authFormMode = 'sign-in';
         let authSessionEpoch = 0;
         let authState = { configured: null, authenticated: false, user: null, googleEnabled: false, cloudSyncEnabled: false, csrfToken: null, recoveryMode: false };
@@ -2943,6 +2987,49 @@
             }[char]));
         }
 
+        function t(key, fallback) {
+            const language = userPreferences.language === 'th' ? 'th' : 'en';
+            return UI_TRANSLATIONS[language]?.[key] || fallback || key;
+        }
+
+        function applyLanguage(language) {
+            userPreferences.language = language === 'th' ? 'th' : 'en';
+            document.documentElement.lang = userPreferences.language;
+            document.querySelectorAll('[data-i18n]').forEach(element => {
+                const key = element.dataset.i18n;
+                const english = element.dataset.i18nDefault || element.textContent.trim();
+                if (!element.dataset.i18nDefault) element.dataset.i18nDefault = english;
+                element.textContent = t(key, english);
+            });
+            const navKeys = { home: 'home', watchlist: 'watchlist', search: 'search', tools: 'tools', portfolio: 'portfolio', profile: 'profile' };
+            document.querySelectorAll('.pt-nav-item').forEach(button => {
+                const label = button.querySelector('span:not(.pt-nav-badge)');
+                const key = navKeys[button.dataset.nav];
+                if (label && key) {
+                    if (!label.dataset.i18nDefault) label.dataset.i18nDefault = label.textContent.trim();
+                    label.textContent = t(key, label.dataset.i18nDefault);
+                }
+            });
+            const search = document.getElementById('search-input');
+            if (search) search.placeholder = userPreferences.language === 'th' ? 'ค้นหาหุ้น เช่น AAPL, TSLA...' : 'Search stocks, e.g. AAPL, TSLA...';
+            const settingsButton = document.getElementById('app-settings-button');
+            if (settingsButton) {
+                const label = userPreferences.language === 'th' ? 'ตั้งค่า' : 'Settings';
+                settingsButton.title = label;
+                settingsButton.setAttribute('aria-label', label);
+            }
+            updateFavoriteButton();
+            setProfileSummary();
+        }
+
+        function openSettingsSheet() {
+            openProfileSheet();
+            window.requestAnimationFrame(() => {
+                const details = document.getElementById('settings-details');
+                if (details) details.open = true;
+            });
+        }
+
         function profileInitials(user) {
             const source = user && (user.username || user.email || user.display_name);
             if (!source) return 'QA';
@@ -2960,7 +3047,7 @@
             const button = document.getElementById('favorite-current-button');
             if (!button) return;
             const favorite = favoriteTickers.has(currentTicker);
-            button.textContent = favorite ? '★ Favorited' : '☆ Favorite';
+            button.textContent = favorite ? `★ ${t('favorited', 'Favorited')}` : `☆ ${t('favorite', 'Favorite')}`;
             button.setAttribute('aria-pressed', String(favorite));
         }
 
@@ -4159,8 +4246,8 @@
                 if (email) email.textContent = authState.configured === false ? 'Cloud authentication is not configured' : 'Secure session required';
                 const greeting = document.getElementById('home-welcome-title');
                 const greetingCopy = document.getElementById('home-welcome-copy');
-                if (greeting) greeting.innerHTML = 'Welcome to <span>Quantora AI</span>';
-                if (greetingCopy) greetingCopy.textContent = 'Welcome to your portfolio. Live market analysis, Smart Support & Resistance, option tools, and portfolio intelligence in one premium workspace.';
+                if (greeting) greeting.innerHTML = userPreferences.language === 'th' ? 'ยินดีต้อนรับสู่ <span>Quantora AI</span>' : 'Welcome to <span>Quantora AI</span>';
+                if (greetingCopy) greetingCopy.textContent = userPreferences.language === 'th' ? 'ดูข้อมูลตลาด วิเคราะห์หุ้น และจัดการพอร์ตของคุณได้ในที่เดียว' : 'Welcome to your portfolio. Live market analysis, Smart Support & Resistance, option tools, and portfolio intelligence in one premium workspace.';
                 return;
             }
             if (name) name.textContent = user.username || user.display_name || 'Welcome to Quantora AI';
@@ -4168,8 +4255,8 @@
             const greeting = document.getElementById('home-welcome-title');
             const greetingCopy = document.getElementById('home-welcome-copy');
             const nickname = user.username || user.display_name;
-            if (greeting && nickname) greeting.innerHTML = `Hello ${escapeHtml(nickname)} <span>👋</span>`;
-            if (greetingCopy && nickname) greetingCopy.textContent = 'Welcome to your Portfolio. Your synced Quantora workspace is ready.';
+            if (greeting && nickname) greeting.innerHTML = userPreferences.language === 'th' ? `สวัสดี ${escapeHtml(nickname)} <span>👋</span>` : `Hello ${escapeHtml(nickname)} <span>👋</span>`;
+            if (greetingCopy && nickname) greetingCopy.textContent = userPreferences.language === 'th' ? 'ยินดีต้อนรับสู่พอร์ตของคุณ ข้อมูลของคุณซิงก์เรียบร้อยแล้ว' : 'Welcome to your Portfolio. Your synced Quantora workspace is ready.';
         }
 
         function setAuthStatus(message, tone = '') {
@@ -4219,7 +4306,7 @@
                     <div class="pt-auth-stack">
                         <div class="pt-sync-note" style="margin:0;">${authState.cloudSyncEnabled ? 'Cloud sync is active for watchlists, positions, and indicator preferences on this account.' : 'Your account is signed in, but cloud storage is not configured on this deployment yet.'}</div>
                         ${authState.cloudSyncEnabled ? '<section id="cloud-workspace-manager" class="pt-workspace-manager" aria-label="Cloud workspace manager"><div id="cloud-workspace-content"></div></section><section id="alert-center-manager" class="pt-alert-manager" aria-label="Cloud alert rules and in-app notification inbox"><div id="alert-center-content"></div></section>' : ''}
-                        ${authState.cloudSyncEnabled ? `<details class="pt-sync-note" style="margin:0"><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">Workspace settings</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>Theme</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>Language</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>ไทย</option></select></label><label class="pt-tools-field"><span>Currency</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>Default timeframe</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">Changes save automatically to your cloud workspace.</p></details>` : ''}
+                        ${authState.cloudSyncEnabled ? `<details id="settings-details" class="pt-sync-note" style="margin:0"><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">${t('workspace_settings', 'Workspace settings')}</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>${t('theme', 'Theme')}</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>${t('language', 'Language')}</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>ไทย</option></select></label><label class="pt-tools-field"><span>${t('currency', 'Currency')}</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>${t('timeframe', 'Default timeframe')}</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">${t('auto_save', 'Changes save automatically to your cloud workspace.')}</p></details>` : ''}
                         <button type="button" class="pt-auth-action secondary" onclick="signOut()">Sign out</button>
                         <div id="profile-auth-status" class="pt-auth-status"></div>
                     </div>`;
@@ -4449,6 +4536,7 @@
                 const preference = data.preferences || data;
                 userPreferences = { ...userPreferences, ...preference };
                 document.documentElement.dataset.theme = userPreferences.theme || 'dark';
+                applyLanguage(userPreferences.language);
                 const savedSettings = preference.ema_settings;
                 if (savedSettings && typeof savedSettings === 'object') {
                     const merged = {};
@@ -4488,12 +4576,15 @@
                 timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
                 default_indicator: userPreferences.default_indicator || 'Smart S/R',
             };
+            applyLanguage(payload.language);
             try {
                 const response = await authFetch('/api/preferences', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload) });
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok) throw new Error(data.detail || 'Unable to save settings.');
                 userPreferences = { ...userPreferences, ...(data.preferences || data) };
                 document.documentElement.dataset.theme = userPreferences.theme || 'dark';
+                applyLanguage(userPreferences.language);
+                renderProfileAuthContent();
             } catch (error) {
                 console.warn('Cloud settings could not be saved:', error);
             }
@@ -4582,20 +4673,47 @@
             }
         }
 
-        function renderTrendingIndustries() {
+        async function renderTrendingIndustries() {
             const host = document.getElementById('trending-industries-list');
             if (!host) return;
             host.replaceChildren();
             TRENDING_INDUSTRIES.forEach(industry => {
-                const card = document.createElement('button');
-                card.type = 'button';
-                card.className = 'pt-industry-card';
-                card.title = `Open ${industry.name} category`;
-                card.innerHTML = `<span class="pt-industry-name">${escapeHtml(industry.name)}</span><span class="pt-industry-performance">Loading…</span><span class="pt-industry-detail">${industry.count} stocks · ${escapeHtml(industry.symbol)} proxy</span>`;
-                card.addEventListener('click', () => { void selectCategoryRail(industry.category || industry.name); navigateTerminal('home'); });
+                const card = document.createElement('div');
+                card.className = 'pt-industry-card pt-skeleton';
+                card.setAttribute('aria-busy', 'true');
                 host.appendChild(card);
-                void hydrateTrendingIndustry(card, industry);
             });
+            try {
+                const response = await fetch('/api/industry-trends', { cache: 'no-store' });
+                if (!response.ok) throw new Error('Industry activity is unavailable.');
+                const data = await response.json();
+                const industries = Array.isArray(data.items) ? data.items : [];
+                host.replaceChildren();
+                industrySnapshots.clear();
+                industries.forEach(industry => {
+                    const performance = Number(industry.performance_pct);
+                    const hasPerformance = Number.isFinite(performance);
+                    industrySnapshots.set(industry.name, { ...industry, performance });
+                    const card = document.createElement('button');
+                    card.type = 'button';
+                    card.className = 'pt-industry-card';
+                    card.title = `Open ${industry.name} category`;
+                    const performanceText = hasPerformance ? `${performance >= 0 ? '+' : ''}${performance.toFixed(2)}%` : '—';
+                    const momentum = String(industry.momentum || 'Neutral');
+                    const relativeVolume = Number(industry.relative_volume);
+                    const volumeText = Number.isFinite(relativeVolume) ? `Vol ${relativeVolume.toFixed(1)}x` : 'Vol —';
+                    card.innerHTML = `<span class="pt-industry-name">${escapeHtml(industry.name)}</span><span class="pt-industry-performance ${performance > 0 ? 'positive' : performance < 0 ? 'negative' : ''}">${performanceText}</span><span class="pt-industry-detail">${Number(industry.stock_count || 0)} stocks · ${escapeHtml(momentum)} · ${volumeText}</span>`;
+                    card.addEventListener('click', () => { void selectCategoryRail(industry.category || industry.name); navigateTerminal('home'); });
+                    host.appendChild(card);
+                });
+                renderIndustryMovers();
+            } catch (error) {
+                host.replaceChildren();
+                const message = document.createElement('p');
+                message.className = 'pt-category-message error';
+                message.textContent = error.message || 'Unable to rank industry activity right now.';
+                host.appendChild(message);
+            }
         }
 
         function renderIndustryMovers() {
@@ -4619,30 +4737,6 @@
             };
             const ordered = [...snapshots].sort((a, b) => b.performance - a.performance);
             host.append(makeColumn('Top gainers', ordered.slice(0, 3), 'positive'), makeColumn('Top losers', ordered.slice(-3).reverse(), 'negative'));
-        }
-
-        async function hydrateTrendingIndustry(card, industry) {
-            try {
-                const response = await fetch(`/api/stats?ticker=${encodeURIComponent(industry.symbol)}`, { cache: 'no-store' });
-                if (!response.ok) throw new Error('price unavailable');
-                const stats = await response.json();
-                const price = Number(stats.current_price);
-                const previous = Number(stats.prev_close);
-                const performance = previous > 0 && Number.isFinite(price) ? ((price - previous) / previous) * 100 : NaN;
-                industrySnapshots.set(industry.name, { ...industry, performance });
-                renderIndustryMovers();
-                const performanceEl = card.querySelector('.pt-industry-performance');
-                const detailEl = card.querySelector('.pt-industry-detail');
-                if (performanceEl) {
-                    performanceEl.textContent = Number.isFinite(performance) ? `${performance >= 0 ? '+' : ''}${performance.toFixed(2)}%` : '—';
-                    performanceEl.classList.toggle('positive', performance >= 0);
-                    performanceEl.classList.toggle('negative', performance < 0);
-                }
-                if (detailEl) detailEl.textContent = `${industry.count} stocks · ${performance >= 0 ? 'Bullish' : 'Bearish'} momentum`;
-            } catch (_) {
-                const performanceEl = card.querySelector('.pt-industry-performance');
-                if (performanceEl) performanceEl.textContent = 'Data unavailable';
-            }
         }
 
         // --- 🔎 ค้นหาหุ้นจากฐานข้อมูล Ticker ฝั่ง Backend ---
@@ -7160,6 +7254,7 @@
             }
             setInitialSkeletonLoading(true);
             setNetworkStatus(navigator.onLine);
+            applyLanguage(userPreferences.language);
             renderIndicatorsPanel();
             renderToolsCalculatorFields();
             renderTrendingIndustries();
