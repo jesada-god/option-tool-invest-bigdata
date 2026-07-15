@@ -1,0 +1,28 @@
+# Python runtime and virtual environments
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+.venv/
+venv/
+env/
+
+# Secrets and local environment overrides
+.env
+.env.*
+!.env.example
+
+# Tooling, test, and editor output
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.render/
+.vscode/
+.idea/
+*.log
+
+# Operating-system files
+.DS_Store
+Thumbs.db

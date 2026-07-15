@@ -1,0 +1,51 @@
+name: Validate application
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  backend-syntax:
+    name: Backend syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+      - name: Install backend dependencies
+        run: python -m pip install -r requirements.txt
+      - name: Compile Python modules
+        run: python -m compileall -q .
+      - name: Import application and verify health check
+        run: python -c "import main; assert main.health_check()['status'] == 'ok'"
+      - name: Run deterministic live-quote hub tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Validate Render startup script
+        run: sh -n scripts/start-render.sh
+
+  frontend-syntax:
+    name: Frontend syntax
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Validate JavaScript syntax
+        run: node --check tmp_fullscript.js
+      - name: Verify inline script mirror
+        run: |
+          node - <<'NODE'
+          const fs = require('fs');
+          const html = fs.readFileSync('index.html', 'utf8');
+          const inline = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
+          if (!inline) throw new Error('Inline application script was not found.');
+          const mirror = fs.readFileSync('tmp_fullscript.js', 'utf8').trim();
+          if (inline[1].trim() !== mirror) {
+            throw new Error('index.html inline script and tmp_fullscript.js are out of sync.');
+          }
+          NODE

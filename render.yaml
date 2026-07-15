@@ -1,0 +1,18 @@
+# Render Blueprint: one same-origin FastAPI web service.
+# The app serves the UI, REST API, and WebSocket from the same Render URL.
+services:
+  - type: web
+    name: portfolio-terminal-ai
+    runtime: python
+    region: singapore
+    plan: free
+    numInstances: 1
+    buildCommand: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
+    startCommand: sh scripts/start-render.sh
+    healthCheckPath: /healthz
+    autoDeployTrigger: checksPass
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: TRUST_PROXY_HEADERS
+        value: "true"

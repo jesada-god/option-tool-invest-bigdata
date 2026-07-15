@@ -1,5 +1,4 @@
-
-        // --- ⚙️ State Management & Data Fetching ---
+// --- ⚙️ State Management & Data Fetching ---
         let currentTicker = "NVDA";
         let currentTimeframe = "1d";
         let currentMarketSession = "CLOSED";
@@ -14,7 +13,102 @@
         let currentClosePrice = 0;
         let watchlist = [];
         let ws = null;
+        let wsReconnectTimer = null;
+        let wsReconnectAttempts = 0;
+        let wsConnectionEpoch = 0;
+        let wsLastMessageAt = 0;
+        let wsLastSequence = 0;
+        let wsWatchdogTimer = null;
         let searchDebounce = null;
+        let tickerSearchAbortController = null;
+        let categoryRailAbortController = null;
+        let categoryRailRequestVersion = 0;
+        let categoryRailCategories = [];
+        let selectedCategoryRail = '';
+        let dashboardAbortController = null;
+        let chartRefreshAbortController = null;
+        let gaugesAbortController = null;
+        let viewEpoch = 0;
+        let isPageVisible = document.visibilityState === 'visible';
+        let isNetworkOnline = navigator.onLine;
+        let terminalResyncTimer = null;
+        let preferenceSyncTimer = null;
+        let authFormMode = 'sign-in';
+        let authSessionEpoch = 0;
+        let authState = { configured: null, authenticated: false, user: null, googleEnabled: false, cloudSyncEnabled: false, csrfToken: null, recoveryMode: false };
+        let cloudWorkspace = {
+            watchlists: [],
+            portfolios: [],
+            selectedWatchlistId: null,
+            selectedPortfolioId: null,
+            loaded: false,
+            loading: false,
+            error: '',
+            statusMessage: '',
+            statusTone: '',
+            requestVersion: 0,
+        };
+        let cloudWorkspaceAbortController = null;
+
+        // Cloud alert rules and the inbox are deliberately bounded client
+        // state. Server data remains the source of truth; no alert or event is
+        // written to browser storage.
+        const ALERT_CENTER_POLL_MS = 20_000;
+        let alertCenterLoadPromise = null;
+        let alertCenter = {
+            alerts: [],
+            notifications: [],
+            unreadCount: 0,
+            loading: false,
+            error: '',
+            statusMessage: '',
+            statusTone: '',
+            requestVersion: 0,
+            abortController: null,
+            pollTimer: null,
+            draft: null,
+        };
+
+        function isAbortError(error) {
+            return error && error.name === 'AbortError';
+        }
+
+        function isCurrentView(context) {
+            return Boolean(context) &&
+                context.epoch === viewEpoch &&
+                context.ticker === currentTicker &&
+                context.timeframe === currentTimeframe &&
+                (!context.signal || !context.signal.aborted);
+        }
+
+        function invalidateViewRequests() {
+            viewEpoch += 1;
+            [dashboardAbortController, chartRefreshAbortController, gaugesAbortController].forEach(controller => {
+                if (controller && !controller.signal.aborted) controller.abort();
+            });
+            dashboardAbortController = null;
+            chartRefreshAbortController = null;
+            gaugesAbortController = null;
+            return viewEpoch;
+        }
+
+        function makeDashboardContext() {
+            if (dashboardAbortController && !dashboardAbortController.signal.aborted) {
+                dashboardAbortController.abort();
+            }
+            const controller = new AbortController();
+            dashboardAbortController = controller;
+            return {
+                epoch: ++viewEpoch,
+                ticker: currentTicker,
+                timeframe: currentTimeframe,
+                signal: controller.signal,
+            };
+        }
+
+        function currentViewContext() {
+            return { epoch: viewEpoch, ticker: currentTicker, timeframe: currentTimeframe };
+        }
 
         function getSRRightOffset() {
             const offset = Math.max(80, Math.min(120, Math.floor(window.innerWidth * 0.12)));
@@ -24,12 +118,1618 @@
         const searchInput = document.getElementById('search-input');
         const autocompleteList = document.getElementById('autocomplete-list');
 
-        // --- 🔎 ค้นหาหุ้นจากฐานข้อมูล Ticker ฝั่ง Backend ---
-        async function fetchTickerMatches(val) {
+        // --- ✨ V2 application shell: navigation only, existing engines stay in place ---
+        function setActiveNavigation(target) {
+            document.querySelectorAll('.pt-nav-item').forEach(item => {
+                item.classList.toggle('is-active', item.dataset.nav === target);
+            });
+        }
+
+        function navigateTerminal(target, source) {
+            if (target === 'profile') {
+                setActiveNavigation('profile');
+                openProfileSheet();
+                return;
+            }
+
+            const targets = {
+                home: 'home-section',
+                watchlist: 'watchlist-row',
+                search: 'search-input',
+                analysis: 'tvchart',
+                tools: 'tools-section',
+                portfolio: 'portfolio-section',
+            };
+            const targetEl = document.getElementById(targets[target]);
+            if (targetEl) targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+
+            if (target === 'search') {
+                setActiveNavigation('search');
+                window.setTimeout(() => searchInput.focus({ preventScroll: true }), 220);
+            } else if (target !== 'analysis') {
+                setActiveNavigation(target);
+            }
+
+            if (source) setActiveNavigation(source.dataset.nav || target);
+        }
+
+        function openProfileSheet() {
+            const sheet = document.getElementById('profile-sheet');
+            renderProfileAuthContent();
+            sheet.classList.add('is-open');
+            sheet.setAttribute('aria-hidden', 'false');
+            if (cloudWorkspaceEnabled()) {
+                void loadCloudWorkspace();
+                void refreshAlertCenter({ quiet: true });
+                startAlertCenterPolling();
+            }
+        }
+
+        function closeProfileSheet() {
+            const sheet = document.getElementById('profile-sheet');
+            sheet.classList.remove('is-open');
+            sheet.setAttribute('aria-hidden', 'true');
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>"']/g, char => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[char]));
+        }
+
+        function profileInitials(user) {
+            const source = user && (user.username || user.email || user.display_name);
+            if (!source) return 'PT';
+            return String(source).trim().slice(0, 2).toUpperCase() || 'PT';
+        }
+
+        function authHeaders(includeJson = false) {
+            const headers = {};
+            if (includeJson) headers['Content-Type'] = 'application/json';
+            if (authState.csrfToken) headers['X-CSRF-Token'] = authState.csrfToken;
+            return headers;
+        }
+
+        async function authFetch(input, init = {}) {
+            const response = await fetch(input, { ...init, credentials: 'same-origin' });
+            const refreshedCsrf = response.headers.get('X-CSRF-Token');
+            if (refreshedCsrf) authState.csrfToken = refreshedCsrf;
+            return response;
+        }
+
+        // --- Authenticated alert rules and notification inbox -------------
+        // Only Price and Support/Resistance rules are surfaced as actionable
+        // here. They are explicitly in-app notifications; push/email settings
+        // are intentionally not implied by this UI.
+        const ALERT_CENTER_TYPES = Object.freeze({
+            price: 'Price',
+            support_resistance: 'S/R',
+        });
+        const ALERT_CENTER_CONDITIONS = Object.freeze({
+            price: Object.freeze([
+                Object.freeze({ value: 'above', label: 'Price moves above' }),
+                Object.freeze({ value: 'below', label: 'Price moves below' }),
+                Object.freeze({ value: 'crosses_above', label: 'Crosses above' }),
+                Object.freeze({ value: 'crosses_below', label: 'Crosses below' }),
+            ]),
+            support_resistance: Object.freeze([
+                Object.freeze({ value: 'breakout', label: 'Resistance breakout' }),
+                Object.freeze({ value: 'breakdown', label: 'Support breakdown' }),
+                Object.freeze({ value: 'bounce', label: 'Support / resistance bounce' }),
+            ]),
+        });
+
+        function alertCenterEnabled() {
+            return Boolean(authState.authenticated && authState.cloudSyncEnabled);
+        }
+
+        function alertCenterTicker(value = currentTicker) {
+            const ticker = String(value || '').trim().toUpperCase();
+            return /^[A-Z0-9.-]{1,12}$/.test(ticker) ? ticker : '';
+        }
+
+        function alertCenterDefaultDraft() {
+            return {
+                ticker: alertCenterTicker(),
+                alert_type: 'price',
+                condition: 'above',
+                target_value: '',
+                cooldown_seconds: '300',
+            };
+        }
+
+        function alertCenterDraft() {
+            if (!alertCenter.draft || typeof alertCenter.draft !== 'object') {
+                alertCenter.draft = alertCenterDefaultDraft();
+            }
+            const draft = alertCenter.draft;
+            if (!ALERT_CENTER_TYPES[draft.alert_type]) draft.alert_type = 'price';
+            const validConditions = ALERT_CENTER_CONDITIONS[draft.alert_type];
+            if (!validConditions.some(item => item.value === draft.condition)) {
+                draft.condition = validConditions[0].value;
+            }
+            if (!draft.ticker) draft.ticker = alertCenterTicker();
+            return draft;
+        }
+
+        function alertCenterId(value) {
+            const id = Number(value);
+            return Number.isSafeInteger(id) && id > 0 ? id : null;
+        }
+
+        function isAlertCenterActionable(alert) {
+            return Boolean(alert && ALERT_CENTER_TYPES[String(alert.alert_type || '')]);
+        }
+
+        function alertCenterTypeLabel(type) {
+            return ALERT_CENTER_TYPES[String(type || '')] || 'Unavailable rule';
+        }
+
+        function alertCenterConditionLabel(type, condition) {
+            const conditions = ALERT_CENTER_CONDITIONS[String(type || '')] || [];
+            const matching = conditions.find(item => item.value === String(condition || ''));
+            return matching ? matching.label : 'Unavailable condition';
+        }
+
+        function alertCenterNotificationTypeLabel(type) {
+            if (type === 'price') return 'Price';
+            if (type === 'support_resistance') return 'S/R';
+            return 'Notification';
+        }
+
+        function alertCenterFormatTarget(value) {
+            const numeric = Number(value);
+            if (!Number.isFinite(numeric) || numeric < 0) return 'Target unavailable';
+            return `$${numeric.toLocaleString(undefined, { maximumFractionDigits: 8 })}`;
+        }
+
+        function alertCenterFormatCooldown(value) {
+            const seconds = Number(value);
+            if (!Number.isFinite(seconds) || seconds < 0) return 'cooldown unavailable';
+            if (seconds === 0) return 'no cooldown';
+            if (seconds % 3600 === 0) return `${seconds / 3600}h cooldown`;
+            if (seconds % 60 === 0) return `${seconds / 60}m cooldown`;
+            return `${seconds}s cooldown`;
+        }
+
+        function alertCenterFormatTime(value) {
+            const timestamp = Date.parse(value || '');
+            if (!Number.isFinite(timestamp)) return 'just now';
             try {
-                const res = await fetch(`/api/tickers?q=${encodeURIComponent(val)}`);
+                return new Intl.DateTimeFormat(undefined, {
+                    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+                }).format(new Date(timestamp));
+            } catch (_) {
+                return new Date(timestamp).toLocaleString();
+            }
+        }
+
+        function alertCenterElement(tag, className = '', text = '') {
+            const element = document.createElement(tag);
+            if (className) element.className = className;
+            if (text !== '') element.textContent = text;
+            return element;
+        }
+
+        function alertCenterButton(label, handler, variant = '') {
+            const button = alertCenterElement('button', `pt-alert-button${variant ? ` ${variant}` : ''}`, label);
+            button.type = 'button';
+            button.addEventListener('click', handler);
+            return button;
+        }
+
+        function alertCenterInput(id, type, placeholder, value) {
+            const input = document.createElement('input');
+            input.id = id;
+            input.type = type;
+            input.placeholder = placeholder;
+            input.autocomplete = 'off';
+            input.value = value == null ? '' : String(value);
+            return input;
+        }
+
+        function updateAlertNotificationBadges() {
+            const rawCount = Number(alertCenter.unreadCount);
+            const unreadCount = Number.isFinite(rawCount) && rawCount > 0 ? Math.floor(rawCount) : 0;
+            const text = unreadCount > 99 ? '99+' : String(unreadCount);
+            const topBadge = document.getElementById('notification-top-badge');
+            const navBadge = document.getElementById('notification-nav-badge');
+            const notificationButton = document.getElementById('notification-center-button');
+            [topBadge, navBadge].forEach(badge => {
+                if (!badge) return;
+                badge.hidden = unreadCount === 0;
+                badge.textContent = text;
+                badge.setAttribute('aria-label', unreadCount === 1 ? '1 unread notification' : `${unreadCount} unread notifications`);
+            });
+            if (notificationButton) {
+                notificationButton.setAttribute('aria-label', unreadCount === 1 ? '1 unread notification' : unreadCount ? `${unreadCount} unread notifications` : 'Notifications');
+                notificationButton.title = unreadCount === 1 ? '1 unread notification' : unreadCount ? `${unreadCount} unread notifications` : 'Notifications';
+            }
+        }
+
+        function setAlertCenterStatus(message = '', tone = '') {
+            alertCenter.statusMessage = message;
+            alertCenter.statusTone = tone;
+            const status = document.getElementById('alert-center-status');
+            if (!status) return;
+            status.textContent = message;
+            status.className = `pt-alert-status${tone ? ` ${tone}` : ''}`;
+        }
+
+        function resetAlertCenter() {
+            if (alertCenter.abortController && !alertCenter.abortController.signal.aborted) {
+                alertCenter.abortController.abort();
+            }
+            if (alertCenter.pollTimer) window.clearTimeout(alertCenter.pollTimer);
+            const requestVersion = alertCenter.requestVersion + 1;
+            alertCenterLoadPromise = null;
+            alertCenter = {
+                alerts: [], notifications: [], unreadCount: 0, loading: false, error: '',
+                statusMessage: '', statusTone: '', requestVersion, abortController: null,
+                pollTimer: null, draft: null,
+            };
+            updateAlertNotificationBadges();
+        }
+
+        function stopAlertCenterPolling() {
+            if (alertCenter.pollTimer) window.clearTimeout(alertCenter.pollTimer);
+            alertCenter.pollTimer = null;
+        }
+
+        function startAlertCenterPolling() {
+            stopAlertCenterPolling();
+            if (!alertCenterEnabled() || !isPageVisible || !isNetworkOnline) return;
+            const poll = () => {
+                if (!alertCenterEnabled() || !isPageVisible || !isNetworkOnline) {
+                    alertCenter.pollTimer = null;
+                    return;
+                }
+                void refreshAlertCenter({ quiet: true }).finally(() => {
+                    if (alertCenterEnabled() && isPageVisible && isNetworkOnline) {
+                        alertCenter.pollTimer = window.setTimeout(poll, ALERT_CENTER_POLL_MS);
+                    }
+                });
+            };
+            alertCenter.pollTimer = window.setTimeout(poll, ALERT_CENTER_POLL_MS);
+        }
+
+        async function alertCenterResponse(response, fallback) {
+            const data = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(cloudWorkspaceErrorMessage(data, fallback));
+            return data || {};
+        }
+
+        function renderAlertCreatePanel() {
+            const panel = alertCenterElement('section', 'pt-alert-panel');
+            panel.append(
+                alertCenterElement('h4', '', 'Create a live rule'),
+                alertCenterElement('p', 'pt-alert-empty', 'Price and S/R only. Events are delivered to this in-app inbox.'),
+            );
+            const draft = alertCenterDraft();
+            const form = document.createElement('form');
+            form.className = 'pt-alert-fields';
+            form.noValidate = true;
+            form.addEventListener('submit', event => {
+                event.preventDefault();
+                void createAlertCenterRule();
+            });
+
+            const ticker = alertCenterInput('alert-center-ticker', 'text', 'Ticker, e.g. NVDA', draft.ticker);
+            ticker.maxLength = 12;
+            ticker.setAttribute('aria-label', 'Alert ticker');
+            ticker.addEventListener('input', () => { alertCenter.draft.ticker = ticker.value; });
+
+            const type = document.createElement('select');
+            type.id = 'alert-center-type';
+            type.setAttribute('aria-label', 'Alert type');
+            Object.entries(ALERT_CENTER_TYPES).forEach(([value, label]) => {
+                const option = document.createElement('option');
+                option.value = value;
+                option.textContent = `${label} (in-app)`;
+                option.selected = value === draft.alert_type;
+                type.appendChild(option);
+            });
+            type.addEventListener('change', () => {
+                alertCenter.draft.alert_type = type.value;
+                alertCenter.draft.condition = ALERT_CENTER_CONDITIONS[type.value][0].value;
+                renderAlertCenter();
+            });
+
+            const condition = document.createElement('select');
+            condition.id = 'alert-center-condition';
+            condition.setAttribute('aria-label', 'Alert condition');
+            ALERT_CENTER_CONDITIONS[draft.alert_type].forEach(item => {
+                const option = document.createElement('option');
+                option.value = item.value;
+                option.textContent = item.label;
+                option.selected = item.value === draft.condition;
+                condition.appendChild(option);
+            });
+            condition.addEventListener('change', () => { alertCenter.draft.condition = condition.value; });
+
+            const target = alertCenterInput('alert-center-target', 'number', 'Target price / S&R level', draft.target_value);
+            target.min = '0';
+            target.step = 'any';
+            target.inputMode = 'decimal';
+            target.setAttribute('aria-label', 'Target price or support resistance level');
+            target.addEventListener('input', () => { alertCenter.draft.target_value = target.value; });
+
+            const cooldown = alertCenterInput('alert-center-cooldown', 'number', 'Cooldown seconds', draft.cooldown_seconds);
+            cooldown.min = '0';
+            cooldown.max = '604800';
+            cooldown.step = '1';
+            cooldown.inputMode = 'numeric';
+            cooldown.setAttribute('aria-label', 'Cooldown seconds');
+            cooldown.addEventListener('input', () => { alertCenter.draft.cooldown_seconds = cooldown.value; });
+
+            const split = alertCenterElement('div', 'pt-alert-split');
+            split.append(type, condition);
+            const numericSplit = alertCenterElement('div', 'pt-alert-split');
+            numericSplit.append(target, cooldown);
+            const submit = alertCenterButton('Create in-app rule', () => {}, '');
+            submit.type = 'submit';
+            form.append(ticker, split, numericSplit, submit);
+            panel.appendChild(form);
+            return panel;
+        }
+
+        function renderAlertRulesPanel() {
+            const panel = alertCenterElement('section', 'pt-alert-panel');
+            panel.append(
+                alertCenterElement('h4', '', 'Your live rules'),
+                alertCenterElement('p', 'pt-alert-empty', 'Enable, pause, or remove rules tied to your account.'),
+            );
+            const list = alertCenterElement('div', 'pt-alert-list');
+            const alerts = Array.isArray(alertCenter.alerts) ? alertCenter.alerts : [];
+            if (!alerts.length) {
+                list.appendChild(alertCenterElement('p', 'pt-alert-empty', 'No cloud alert rules yet.'));
+            } else {
+                alerts.forEach(alert => {
+                    const id = alertCenterId(alert && alert.id);
+                    if (!id) return;
+                    const row = alertCenterElement('article', 'pt-alert-row');
+                    const content = document.createElement('div');
+                    const type = String(alert.alert_type || '');
+                    const ticker = alertCenterTicker(alert.ticker) || 'Market';
+                    const name = typeof alert.name === 'string' && alert.name.trim()
+                        ? alert.name.trim()
+                        : `${ticker} ${alertCenterTypeLabel(type)}`;
+                    const title = alertCenterElement('strong', '', name);
+                    const target = alertCenterFormatTarget(alert.target_value);
+                    const condition = alertCenterConditionLabel(type, alert.condition);
+                    const state = alert.is_enabled ? 'active' : 'paused';
+                    const detail = alertCenterElement(
+                        'span', '', `${ticker} · ${alertCenterTypeLabel(type)} · ${condition} ${target} · ${state} · ${alertCenterFormatCooldown(alert.cooldown_seconds)}`,
+                    );
+                    content.append(title, detail);
+
+                    const actions = alertCenterElement('div', 'pt-alert-actions');
+                    if (isAlertCenterActionable(alert)) {
+                        actions.appendChild(alertCenterButton(
+                            alert.is_enabled ? 'Pause' : 'Enable',
+                            () => void toggleAlertCenterRule(id, Boolean(alert.is_enabled)),
+                            'ghost',
+                        ));
+                    } else {
+                        const unsupported = alertCenterButton('Not live here', () => {}, 'ghost');
+                        unsupported.disabled = true;
+                        unsupported.title = 'Only Price and S/R rules are actionable in this in-app surface.';
+                        actions.appendChild(unsupported);
+                    }
+                    actions.appendChild(alertCenterButton('Delete', () => void deleteAlertCenterRule(id), 'danger'));
+                    row.append(content, actions);
+                    list.appendChild(row);
+                });
+            }
+            panel.appendChild(list);
+            return panel;
+        }
+
+        function renderAlertNotificationPanel() {
+            const panel = alertCenterElement('section', 'pt-alert-panel pt-alert-inbox-panel');
+            const heading = alertCenterElement('div', 'pt-alert-head');
+            const copy = document.createElement('div');
+            copy.append(
+                alertCenterElement('h4', '', 'In-app notification inbox'),
+                alertCenterElement('p', '', 'Recent Price and S/R events from your cloud rules.'),
+            );
+            const unread = alertCenterElement('span', 'pt-alert-unread', String(Math.max(0, Number(alertCenter.unreadCount) || 0)));
+            unread.setAttribute('aria-label', 'Unread notifications');
+            heading.append(copy, unread);
+            panel.appendChild(heading);
+
+            const actionRow = alertCenterElement('div', 'pt-alert-actions');
+            const readAll = alertCenterButton('Mark all read', () => void markAllAlertNotificationsRead(), 'ghost');
+            readAll.disabled = !(Number(alertCenter.unreadCount) > 0);
+            actionRow.appendChild(readAll);
+            panel.appendChild(actionRow);
+
+            const list = alertCenterElement('div', 'pt-alert-list');
+            const notifications = Array.isArray(alertCenter.notifications) ? alertCenter.notifications : [];
+            if (!notifications.length) {
+                list.appendChild(alertCenterElement('p', 'pt-alert-empty', 'No in-app notifications yet.'));
+            } else {
+                notifications.forEach(notification => {
+                    const id = alertCenterId(notification && notification.id);
+                    if (!id) return;
+                    const severity = String(notification.severity || 'info');
+                    const row = alertCenterElement(
+                        'article', `pt-alert-row${notification.read_at ? ' is-read' : ''}${severity === 'critical' ? ' is-critical' : ''}`,
+                    );
+                    const content = document.createElement('div');
+                    const title = alertCenterElement(
+                        'strong', '', typeof notification.title === 'string' && notification.title.trim()
+                            ? notification.title.trim()
+                            : `${alertCenterNotificationTypeLabel(notification.notification_type)} alert`,
+                    );
+                    const ticker = alertCenterTicker(notification.ticker);
+                    const bodyText = typeof notification.body === 'string' ? notification.body.trim() : '';
+                    const description = [
+                        alertCenterNotificationTypeLabel(notification.notification_type),
+                        ticker || null,
+                        bodyText || null,
+                        alertCenterFormatTime(notification.created_at),
+                    ].filter(Boolean).join(' · ');
+                    content.append(title, alertCenterElement('span', '', description));
+
+                    const actions = alertCenterElement('div', 'pt-alert-actions');
+                    if (!notification.read_at) {
+                        actions.appendChild(alertCenterButton('Read', () => void markAlertNotificationRead(id), 'ghost'));
+                    }
+                    actions.appendChild(alertCenterButton('Delete', () => void deleteAlertNotification(id), 'danger'));
+                    row.append(content, actions);
+                    list.appendChild(row);
+                });
+            }
+            panel.appendChild(list);
+            return panel;
+        }
+
+        function renderAlertCenter() {
+            updateAlertNotificationBadges();
+            const host = document.getElementById('alert-center-content');
+            if (!host || !alertCenterEnabled()) return;
+            host.replaceChildren();
+
+            const head = alertCenterElement('div', 'pt-alert-head');
+            const heading = document.createElement('div');
+            heading.append(
+                alertCenterElement('h3', '', 'Alerts & notification inbox'),
+                alertCenterElement('p', '', 'Live in-app only: Price and Support/Resistance. Your account controls every rule.'),
+            );
+            const unread = alertCenterElement('span', 'pt-alert-unread', String(Math.max(0, Number(alertCenter.unreadCount) || 0)));
+            unread.setAttribute('aria-label', 'Unread notifications');
+            head.append(heading, unread);
+            host.appendChild(head);
+
+            if (alertCenter.loading && !alertCenter.alerts.length && !alertCenter.notifications.length) {
+                host.appendChild(alertCenterElement('p', 'pt-alert-status', 'Loading your alert rules and inbox…'));
+                return;
+            }
+            if (alertCenter.error && !alertCenter.alerts.length && !alertCenter.notifications.length) {
+                host.appendChild(alertCenterElement('p', 'pt-alert-status error', alertCenter.error));
+                return;
+            }
+
+            const grid = alertCenterElement('div', 'pt-alert-grid');
+            grid.append(renderAlertCreatePanel(), renderAlertRulesPanel(), renderAlertNotificationPanel());
+            host.appendChild(grid);
+            const status = alertCenterElement(
+                'p', `pt-alert-status${alertCenter.statusTone ? ` ${alertCenter.statusTone}` : ''}`,
+                alertCenter.statusMessage || alertCenter.error,
+            );
+            status.id = 'alert-center-status';
+            host.appendChild(status);
+        }
+
+        async function refreshAlertCenter({ quiet = false, force = false } = {}) {
+            if (!alertCenterEnabled()) {
+                resetAlertCenter();
+                return false;
+            }
+            if (!isNetworkOnline) return false;
+            if (alertCenterLoadPromise) {
+                if (!force) return alertCenterLoadPromise;
+                if (alertCenter.abortController && !alertCenter.abortController.signal.aborted) {
+                    alertCenter.abortController.abort();
+                }
+                alertCenterLoadPromise = null;
+            }
+
+            const requestVersion = ++alertCenter.requestVersion;
+            const controller = new AbortController();
+            alertCenter.abortController = controller;
+            alertCenter.loading = true;
+            alertCenter.error = '';
+            if (!quiet) renderAlertCenter();
+
+            const task = (async () => {
+                try {
+                    const [alertsResponse, notificationsResponse] = await Promise.all([
+                        authFetch('/api/alerts', { headers: authHeaders(), cache: 'no-store', signal: controller.signal }),
+                        authFetch('/api/notifications?limit=20', { headers: authHeaders(), cache: 'no-store', signal: controller.signal }),
+                    ]);
+                    const [alertsData, notificationsData] = await Promise.all([
+                        alertCenterResponse(alertsResponse, 'Unable to load alert rules.'),
+                        alertCenterResponse(notificationsResponse, 'Unable to load notifications.'),
+                    ]);
+                    if (requestVersion !== alertCenter.requestVersion || !alertCenterEnabled()) return false;
+                    alertCenter.alerts = Array.isArray(alertsData.items) ? alertsData.items : [];
+                    alertCenter.notifications = Array.isArray(notificationsData.items) ? notificationsData.items : [];
+                    const unreadCount = Number(notificationsData.unread_count);
+                    alertCenter.unreadCount = Number.isFinite(unreadCount) && unreadCount >= 0 ? Math.floor(unreadCount) : 0;
+                    alertCenter.error = '';
+                    renderAlertCenter();
+                    return true;
+                } catch (error) {
+                    if (error && error.name === 'AbortError') return false;
+                    if (requestVersion === alertCenter.requestVersion && alertCenterEnabled()) {
+                        alertCenter.error = error && error.message ? error.message : 'Unable to load your alert center.';
+                        renderAlertCenter();
+                    }
+                    return false;
+                } finally {
+                    if (requestVersion === alertCenter.requestVersion) {
+                        alertCenter.loading = false;
+                        if (alertCenterEnabled()) renderAlertCenter();
+                    }
+                    if (alertCenter.abortController === controller) alertCenter.abortController = null;
+                }
+            })();
+            alertCenterLoadPromise = task;
+            try {
+                return await task;
+            } finally {
+                if (alertCenterLoadPromise === task) alertCenterLoadPromise = null;
+            }
+        }
+
+        async function mutateAlertCenter(url, init, successMessage) {
+            if (!alertCenterEnabled()) {
+                setAlertCenterStatus('Sign in with cloud sync enabled to manage alerts.', 'error');
+                return false;
+            }
+            setAlertCenterStatus('Saving alert change…');
+            try {
+                const response = await authFetch(url, init);
+                await alertCenterResponse(response, 'Alert change was not accepted.');
+                await refreshAlertCenter({ quiet: true, force: true });
+                setAlertCenterStatus(successMessage, 'success');
+                startAlertCenterPolling();
+                return true;
+            } catch (error) {
+                setAlertCenterStatus(error && error.message ? error.message : 'Unable to save alert change.', 'error');
+                return false;
+            }
+        }
+
+        async function createAlertCenterRule() {
+            if (!alertCenterEnabled()) return;
+            const draft = alertCenterDraft();
+            const ticker = alertCenterTicker(draft.ticker);
+            const target = String(draft.target_value || '').trim();
+            const targetNumber = Number(target);
+            const cooldownNumber = Number(draft.cooldown_seconds);
+            if (!ticker) {
+                setAlertCenterStatus('Enter a valid ticker, for example NVDA.', 'error');
+                return;
+            }
+            if (!target || !Number.isFinite(targetNumber) || targetNumber < 0) {
+                setAlertCenterStatus('Enter a valid non-negative target price or S/R level.', 'error');
+                return;
+            }
+            if (!Number.isInteger(cooldownNumber) || cooldownNumber < 0 || cooldownNumber > 604800) {
+                setAlertCenterStatus('Cooldown must be a whole number of seconds (0–604800).', 'error');
+                return;
+            }
+            const payload = {
+                alert_type: draft.alert_type,
+                condition: draft.condition,
+                ticker,
+                target_value: target,
+                cooldown_seconds: cooldownNumber,
+                delivery_channels: ['in_app'],
+                is_enabled: true,
+            };
+            const created = await mutateAlertCenter('/api/alerts', {
+                method: 'POST', headers: authHeaders(true), body: JSON.stringify(payload),
+            }, `${ticker} ${alertCenterTypeLabel(draft.alert_type)} rule created.`);
+            if (created) {
+                alertCenter.draft = { ...alertCenterDefaultDraft(), ticker, alert_type: draft.alert_type };
+                alertCenter.draft.condition = ALERT_CENTER_CONDITIONS[draft.alert_type][0].value;
+                renderAlertCenter();
+            }
+        }
+
+        async function toggleAlertCenterRule(id, isEnabled) {
+            if (!alertCenterId(id)) return;
+            await mutateAlertCenter(`/api/alerts/${id}`, {
+                method: 'PATCH', headers: authHeaders(true), body: JSON.stringify({ is_enabled: !isEnabled }),
+            }, isEnabled ? 'Alert paused.' : 'Alert enabled.');
+        }
+
+        async function deleteAlertCenterRule(id) {
+            if (!alertCenterId(id)) return;
+            if (!window.confirm('Delete this alert rule? Past inbox events will remain.')) return;
+            await mutateAlertCenter(`/api/alerts/${id}`, {
+                method: 'DELETE', headers: authHeaders(),
+            }, 'Alert deleted.');
+        }
+
+        async function markAlertNotificationRead(id) {
+            if (!alertCenterId(id)) return;
+            await mutateAlertCenter(`/api/notifications/${id}/read`, {
+                method: 'PATCH', headers: authHeaders(),
+            }, 'Notification marked as read.');
+        }
+
+        async function markAllAlertNotificationsRead() {
+            if (!(Number(alertCenter.unreadCount) > 0)) return;
+            await mutateAlertCenter('/api/notifications/read-all', {
+                method: 'POST', headers: authHeaders(),
+            }, 'All notifications marked as read.');
+        }
+
+        async function deleteAlertNotification(id) {
+            if (!alertCenterId(id)) return;
+            await mutateAlertCenter(`/api/notifications/${id}`, {
+                method: 'DELETE', headers: authHeaders(),
+            }, 'Notification deleted.');
+        }
+
+        function openNotificationInbox() {
+            openProfileSheet();
+            window.requestAnimationFrame(() => {
+                const manager = document.getElementById('alert-center-manager');
+                if (manager) manager.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+            });
+        }
+
+        // --- Authenticated cloud workspace ---------------------------------
+        // Selection is deliberately in-memory only. The API remains the source
+        // of truth and legacy users keep the existing /api/watchlist workflow.
+        let cloudWorkspaceLoadPromise = null;
+
+        function cloudWorkspaceEnabled() {
+            return Boolean(authState.authenticated && authState.cloudSyncEnabled);
+        }
+
+        function cloudWorkspaceId(value) {
+            const id = Number(value);
+            return Number.isSafeInteger(id) && id > 0 ? id : null;
+        }
+
+        function resetCloudWorkspace() {
+            if (cloudWorkspaceAbortController && !cloudWorkspaceAbortController.signal.aborted) {
+                cloudWorkspaceAbortController.abort();
+            }
+            cloudWorkspaceAbortController = null;
+            cloudWorkspaceLoadPromise = null;
+            cloudWorkspace = {
+                watchlists: [], portfolios: [], selectedWatchlistId: null, selectedPortfolioId: null,
+                loaded: false, loading: false, error: '', statusMessage: '', statusTone: '',
+                requestVersion: cloudWorkspace.requestVersion + 1,
+            };
+            updatePositionPortfolioSelector();
+        }
+
+        function cloudWorkspaceErrorMessage(data, fallback) {
+            if (data && typeof data.detail === 'string') return data.detail;
+            if (data && typeof data.message === 'string') return data.message;
+            if (data && Array.isArray(data.detail)) {
+                const messages = data.detail.map(item => item && (item.msg || item.message)).filter(Boolean);
+                if (messages.length) return messages.join(' ');
+            }
+            return fallback;
+        }
+
+        async function cloudWorkspaceResponse(response, fallback) {
+            const data = await response.json().catch(() => null);
+            if (!response.ok) throw new Error(cloudWorkspaceErrorMessage(data, fallback));
+            return data || {};
+        }
+
+        function selectedCloudWatchlist() {
+            const id = cloudWorkspaceId(cloudWorkspace.selectedWatchlistId);
+            return cloudWorkspace.watchlists.find(item => cloudWorkspaceId(item && item.id) === id) || null;
+        }
+
+        function selectedCloudPortfolio() {
+            const id = cloudWorkspaceId(cloudWorkspace.selectedPortfolioId);
+            return cloudWorkspace.portfolios.find(item => cloudWorkspaceId(item && item.id) === id) || null;
+        }
+
+        function selectWorkspaceDefaults() {
+            const watchlists = Array.isArray(cloudWorkspace.watchlists) ? cloudWorkspace.watchlists : [];
+            const portfolios = Array.isArray(cloudWorkspace.portfolios) ? cloudWorkspace.portfolios : [];
+            if (!watchlists.some(item => cloudWorkspaceId(item && item.id) === cloudWorkspaceId(cloudWorkspace.selectedWatchlistId))) {
+                const fallbackWatchlist = watchlists.find(item => item && item.is_default) || watchlists[0] || null;
+                cloudWorkspace.selectedWatchlistId = fallbackWatchlist ? cloudWorkspaceId(fallbackWatchlist.id) : null;
+            }
+            if (!portfolios.some(item => cloudWorkspaceId(item && item.id) === cloudWorkspaceId(cloudWorkspace.selectedPortfolioId))) {
+                const fallbackPortfolio = portfolios.find(item => item && item.is_default) || portfolios[0] || null;
+                cloudWorkspace.selectedPortfolioId = fallbackPortfolio ? cloudWorkspaceId(fallbackPortfolio.id) : null;
+            }
+        }
+
+        function cloudWatchlistTickers(watchlistItem) {
+            if (!watchlistItem || !Array.isArray(watchlistItem.items)) return [];
+            return watchlistItem.items
+                .map(item => String(item && item.ticker || '').toUpperCase().trim())
+                .filter(ticker => /^[A-Z0-9.-]{1,12}$/.test(ticker));
+        }
+
+        function syncSelectedCloudWatchlist() {
+            if (!cloudWorkspaceEnabled() || !cloudWorkspace.loaded) return;
+            watchlist = cloudWatchlistTickers(selectedCloudWatchlist());
+            renderWatchlist();
+            updateHomeWatchlistSurface();
+        }
+
+        function updatePositionPortfolioSelector() {
+            const selector = document.getElementById('form-portfolio-id');
+            if (!selector) return;
+            const portfolios = Array.isArray(cloudWorkspace.portfolios)
+                ? cloudWorkspace.portfolios.filter(item => item && !item.archived_at)
+                : [];
+            const cloudEnabled = cloudWorkspaceEnabled() && portfolios.length > 0;
+            selector.hidden = !cloudEnabled;
+            selector.disabled = !cloudEnabled;
+            selector.replaceChildren();
+            if (!cloudEnabled) {
+                const option = document.createElement('option');
+                option.value = '';
+                option.textContent = 'Default portfolio';
+                selector.appendChild(option);
+                return;
+            }
+
+            const selectedId = cloudWorkspaceId(cloudWorkspace.selectedPortfolioId);
+            portfolios.forEach(portfolio => {
+                const option = document.createElement('option');
+                option.value = String(portfolio.id);
+                option.textContent = `${portfolio.name}${portfolio.is_default ? ' · Default' : ''}`;
+                option.selected = cloudWorkspaceId(portfolio.id) === selectedId;
+                selector.appendChild(option);
+            });
+            if (!selector.value && selector.options.length) selector.selectedIndex = 0;
+        }
+
+        function setCloudWorkspaceStatus(message = '', tone = '') {
+            cloudWorkspace.statusMessage = message;
+            cloudWorkspace.statusTone = tone;
+            const status = document.getElementById('cloud-workspace-status');
+            if (!status) return;
+            status.textContent = message;
+            status.className = `pt-workspace-status${tone ? ` ${tone}` : ''}`;
+        }
+
+        function cloudWorkspaceElement(tag, className = '', text = '') {
+            const node = document.createElement(tag);
+            if (className) node.className = className;
+            if (text) node.textContent = text;
+            return node;
+        }
+
+        function cloudWorkspaceButton(label, handler, variant = '') {
+            const button = cloudWorkspaceElement('button', `pt-workspace-button${variant ? ` ${variant}` : ''}`, label);
+            button.type = 'button';
+            button.addEventListener('click', handler);
+            return button;
+        }
+
+        function cloudWorkspaceInput(id, placeholder, value = '') {
+            const input = document.createElement('input');
+            input.id = id;
+            input.type = 'text';
+            input.autocomplete = 'off';
+            input.maxLength = 80;
+            input.placeholder = placeholder;
+            input.value = value || '';
+            return input;
+        }
+
+        function cloudWorkspacePanel(title, copy) {
+            const panel = cloudWorkspaceElement('section', 'pt-workspace-panel');
+            panel.append(cloudWorkspaceElement('h4', '', title), cloudWorkspaceElement('p', '', copy));
+            return panel;
+        }
+
+        function renderCloudWatchlistPanel() {
+            const panel = cloudWorkspacePanel('Named watchlists', 'Select a list to drive the watchlist rail and add symbols to it.');
+            const watchlists = Array.isArray(cloudWorkspace.watchlists) ? cloudWorkspace.watchlists : [];
+            const selected = selectedCloudWatchlist();
+            const fields = cloudWorkspaceElement('div', 'pt-workspace-fields');
+            const selector = document.createElement('select');
+            selector.id = 'cloud-watchlist-select';
+            selector.disabled = !watchlists.length;
+            watchlists.forEach(item => {
+                const option = document.createElement('option');
+                option.value = String(item.id);
+                option.textContent = `${item.name}${item.is_default ? ' · Default' : ''}${item.is_pinned ? ' · Pinned' : ''}`;
+                option.selected = cloudWorkspaceId(item.id) === cloudWorkspaceId(cloudWorkspace.selectedWatchlistId);
+                selector.appendChild(option);
+            });
+            selector.addEventListener('change', event => selectCloudWatchlist(event.target.value));
+            fields.appendChild(selector);
+
+            const renameRow = cloudWorkspaceElement('div', 'pt-workspace-split');
+            const renameInput = cloudWorkspaceInput('cloud-watchlist-name', 'Watchlist name', selected && selected.name);
+            renameInput.disabled = !selected;
+            renameRow.append(renameInput, cloudWorkspaceButton('Save', renameCloudWatchlist, 'ghost'));
+            fields.appendChild(renameRow);
+
+            const createRow = cloudWorkspaceElement('div', 'pt-workspace-split');
+            createRow.append(cloudWorkspaceInput('cloud-watchlist-create', 'New watchlist'), cloudWorkspaceButton('Create', createCloudWatchlist));
+            fields.appendChild(createRow);
+
+            const tickerRow = cloudWorkspaceElement('div', 'pt-workspace-split');
+            const tickerInput = cloudWorkspaceInput('cloud-watchlist-ticker', 'Ticker e.g. NVDA');
+            tickerInput.maxLength = 12;
+            tickerRow.append(tickerInput, cloudWorkspaceButton('Add', addTickerToSelectedCloudWatchlist));
+            fields.appendChild(tickerRow);
+
+            const currentButton = cloudWorkspaceButton(`Add ${currentTicker}`, () => addTickerToSelectedCloudWatchlist(currentTicker), 'ghost');
+            currentButton.disabled = !selected;
+            fields.appendChild(currentButton);
+
+            const tickerList = cloudWorkspaceElement('div', 'pt-workspace-ticker-list');
+            const items = selected && Array.isArray(selected.items) ? selected.items : [];
+            if (!items.length) {
+                tickerList.appendChild(cloudWorkspaceElement('p', 'pt-workspace-empty', 'No symbols in this watchlist yet.'));
+            } else {
+                items.forEach(item => {
+                    const ticker = String(item && item.ticker || '').toUpperCase();
+                    if (!/^[A-Z0-9.-]{1,12}$/.test(ticker)) return;
+                    const pill = cloudWorkspaceElement('span', 'pt-workspace-ticker', ticker);
+                    const remove = cloudWorkspaceButton('×', () => removeTickerFromSelectedCloudWatchlist(ticker));
+                    remove.className = '';
+                    remove.setAttribute('aria-label', `Remove ${ticker}`);
+                    pill.appendChild(remove);
+                    tickerList.appendChild(pill);
+                });
+            }
+            fields.appendChild(tickerList);
+
+            const deleteButton = cloudWorkspaceButton('Delete selected', deleteCloudWatchlist, 'danger');
+            deleteButton.disabled = !selected;
+            fields.appendChild(deleteButton);
+            panel.appendChild(fields);
+            return panel;
+        }
+
+        function renderCloudPortfolioPanel() {
+            const panel = cloudWorkspacePanel('Portfolios', 'The selected portfolio is attached to the next option position you open.');
+            const portfolios = Array.isArray(cloudWorkspace.portfolios) ? cloudWorkspace.portfolios.filter(item => item && !item.archived_at) : [];
+            const selected = selectedCloudPortfolio();
+            const fields = cloudWorkspaceElement('div', 'pt-workspace-fields');
+            const selector = document.createElement('select');
+            selector.id = 'cloud-portfolio-select';
+            selector.disabled = !portfolios.length;
+            portfolios.forEach(item => {
+                const option = document.createElement('option');
+                option.value = String(item.id);
+                option.textContent = `${item.name}${item.is_default ? ' · Default' : ''} · ${item.currency || 'USD'}`;
+                option.selected = cloudWorkspaceId(item.id) === cloudWorkspaceId(cloudWorkspace.selectedPortfolioId);
+                selector.appendChild(option);
+            });
+            selector.addEventListener('change', event => selectCloudPortfolio(event.target.value));
+            fields.appendChild(selector);
+
+            const renameRow = cloudWorkspaceElement('div', 'pt-workspace-split');
+            const renameInput = cloudWorkspaceInput('cloud-portfolio-name', 'Portfolio name', selected && selected.name);
+            renameInput.disabled = !selected;
+            renameRow.append(renameInput, cloudWorkspaceButton('Save', renameCloudPortfolio, 'ghost'));
+            fields.appendChild(renameRow);
+
+            const createRow = cloudWorkspaceElement('div', 'pt-workspace-split');
+            createRow.append(cloudWorkspaceInput('cloud-portfolio-create', 'New portfolio'), cloudWorkspaceButton('Create', createCloudPortfolio));
+            fields.appendChild(createRow);
+
+            const archiveButton = cloudWorkspaceButton('Archive selected', archiveCloudPortfolio, 'danger');
+            archiveButton.disabled = !selected;
+            fields.appendChild(archiveButton);
+            panel.appendChild(fields);
+            return panel;
+        }
+
+        function renderCloudWorkspaceManager() {
+            const host = document.getElementById('cloud-workspace-content');
+            if (!host || !cloudWorkspaceEnabled()) return;
+            host.replaceChildren();
+
+            const head = cloudWorkspaceElement('div', 'pt-workspace-head');
+            const heading = document.createElement('div');
+            heading.append(
+                cloudWorkspaceElement('p', 'pt-workspace-kicker', 'Cloud workspace'),
+                cloudWorkspaceElement('h3', 'pt-workspace-title', 'Watchlists & portfolios'),
+                cloudWorkspaceElement('p', 'pt-workspace-copy', 'Changes are saved to your signed-in account.'),
+            );
+            const headActions = cloudWorkspaceElement('div', 'pt-workspace-head-actions');
+            const refreshButton = cloudWorkspaceButton('Refresh', () => void loadCloudWorkspace(), 'ghost');
+            refreshButton.setAttribute('aria-label', 'Refresh cloud workspace');
+            headActions.append(cloudWorkspaceElement('span', 'pt-workspace-live-badge', 'SYNCED'), refreshButton);
+            head.append(heading, headActions);
+            host.appendChild(head);
+
+            if (cloudWorkspace.loading && !cloudWorkspace.loaded) {
+                host.appendChild(cloudWorkspaceElement('p', 'pt-workspace-status', 'Loading your workspace…'));
+                return;
+            }
+            if (cloudWorkspace.error && !cloudWorkspace.loaded) {
+                host.appendChild(cloudWorkspaceElement('p', 'pt-workspace-status error', cloudWorkspace.error));
+                return;
+            }
+
+            const grid = cloudWorkspaceElement('div', 'pt-workspace-grid');
+            grid.append(renderCloudWatchlistPanel(), renderCloudPortfolioPanel());
+            host.appendChild(grid);
+            const status = cloudWorkspaceElement('p', `pt-workspace-status${cloudWorkspace.statusTone ? ` ${cloudWorkspace.statusTone}` : ''}`, cloudWorkspace.statusMessage);
+            status.id = 'cloud-workspace-status';
+            host.appendChild(status);
+        }
+
+        async function loadCloudWorkspace() {
+            if (!cloudWorkspaceEnabled()) {
+                resetCloudWorkspace();
+                return false;
+            }
+            if (cloudWorkspaceLoadPromise) return cloudWorkspaceLoadPromise;
+
+            const requestVersion = ++cloudWorkspace.requestVersion;
+            const controller = new AbortController();
+            cloudWorkspaceAbortController = controller;
+            cloudWorkspace.loading = true;
+            cloudWorkspace.error = '';
+            renderCloudWorkspaceManager();
+
+            const task = (async () => {
+                try {
+                    const [watchlistResponse, portfolioResponse] = await Promise.all([
+                        authFetch('/api/watchlists', { headers: authHeaders(), cache: 'no-store', signal: controller.signal }),
+                        authFetch('/api/portfolios', { headers: authHeaders(), cache: 'no-store', signal: controller.signal }),
+                    ]);
+                    const [watchlistData, portfolioData] = await Promise.all([
+                        cloudWorkspaceResponse(watchlistResponse, 'Unable to load watchlists.'),
+                        cloudWorkspaceResponse(portfolioResponse, 'Unable to load portfolios.'),
+                    ]);
+                    if (requestVersion !== cloudWorkspace.requestVersion || !cloudWorkspaceEnabled()) return false;
+                    cloudWorkspace.watchlists = Array.isArray(watchlistData.items) ? watchlistData.items : [];
+                    cloudWorkspace.portfolios = Array.isArray(portfolioData.items) ? portfolioData.items : [];
+                    cloudWorkspace.loaded = true;
+                    cloudWorkspace.error = '';
+                    selectWorkspaceDefaults();
+                    syncSelectedCloudWatchlist();
+                    updatePositionPortfolioSelector();
+                    renderCloudWorkspaceManager();
+                    return true;
+                } catch (error) {
+                    if (error && error.name === 'AbortError') return false;
+                    if (requestVersion === cloudWorkspace.requestVersion) {
+                        cloudWorkspace.loaded = false;
+                        cloudWorkspace.error = error.message || 'Unable to load your cloud workspace.';
+                        updatePositionPortfolioSelector();
+                        renderCloudWorkspaceManager();
+                    }
+                    return false;
+                } finally {
+                    if (requestVersion === cloudWorkspace.requestVersion) {
+                        cloudWorkspace.loading = false;
+                        renderCloudWorkspaceManager();
+                    }
+                    if (cloudWorkspaceAbortController === controller) cloudWorkspaceAbortController = null;
+                }
+            })();
+            cloudWorkspaceLoadPromise = task;
+            try {
+                return await task;
+            } finally {
+                if (cloudWorkspaceLoadPromise === task) cloudWorkspaceLoadPromise = null;
+            }
+        }
+
+        async function mutateCloudWorkspace(url, init, successMessage, selectFromResponse) {
+            if (!cloudWorkspaceEnabled()) {
+                setCloudWorkspaceStatus('Sign in with cloud sync enabled to manage this workspace.', 'error');
+                return null;
+            }
+            setCloudWorkspaceStatus('Saving workspace change…');
+            try {
+                const response = await authFetch(url, init);
+                const data = await cloudWorkspaceResponse(response, 'Workspace change was not accepted.');
+                if (typeof selectFromResponse === 'function') selectFromResponse(data);
+                const loaded = await loadCloudWorkspace();
+                if (!loaded) throw new Error('Workspace changed, but the latest data could not be loaded.');
+                setCloudWorkspaceStatus(successMessage, 'success');
+                return data;
+            } catch (error) {
+                setCloudWorkspaceStatus(error.message || 'Unable to save workspace change.', 'error');
+                return null;
+            }
+        }
+
+        function selectCloudWatchlist(value) {
+            const id = cloudWorkspaceId(value);
+            if (!cloudWorkspace.watchlists.some(item => cloudWorkspaceId(item && item.id) === id)) return;
+            cloudWorkspace.selectedWatchlistId = id;
+            syncSelectedCloudWatchlist();
+            renderCloudWorkspaceManager();
+        }
+
+        function selectCloudPortfolio(value) {
+            const id = cloudWorkspaceId(value);
+            if (!cloudWorkspace.portfolios.some(item => cloudWorkspaceId(item && item.id) === id && !item.archived_at)) return;
+            cloudWorkspace.selectedPortfolioId = id;
+            updatePositionPortfolioSelector();
+            renderCloudWorkspaceManager();
+        }
+
+        async function createCloudWatchlist() {
+            const input = document.getElementById('cloud-watchlist-create');
+            const name = input && input.value.trim();
+            if (!name) { setCloudWorkspaceStatus('Enter a watchlist name first.', 'error'); return; }
+            await mutateCloudWorkspace('/api/watchlists', {
+                method: 'POST', headers: authHeaders(true), body: JSON.stringify({ name }),
+            }, 'Watchlist created.', data => {
+                cloudWorkspace.selectedWatchlistId = cloudWorkspaceId(data.watchlist && data.watchlist.id);
+            });
+        }
+
+        async function renameCloudWatchlist() {
+            const selected = selectedCloudWatchlist();
+            const input = document.getElementById('cloud-watchlist-name');
+            const name = input && input.value.trim();
+            if (!selected) { setCloudWorkspaceStatus('Select a watchlist first.', 'error'); return; }
+            if (!name) { setCloudWorkspaceStatus('Enter a watchlist name first.', 'error'); return; }
+            await mutateCloudWorkspace(`/api/watchlists/${selected.id}`, {
+                method: 'PATCH', headers: authHeaders(true), body: JSON.stringify({ name }),
+            }, 'Watchlist renamed.');
+        }
+
+        async function deleteCloudWatchlist() {
+            const selected = selectedCloudWatchlist();
+            if (!selected) { setCloudWorkspaceStatus('Select a watchlist first.', 'error'); return; }
+            if (!window.confirm(`Delete watchlist “${selected.name}”? This cannot be undone.`)) return;
+            await mutateCloudWorkspace(`/api/watchlists/${selected.id}`, {
+                method: 'DELETE', headers: authHeaders(),
+            }, 'Watchlist deleted.');
+        }
+
+        async function addTickerToSelectedCloudWatchlist(tickerOverride) {
+            const selected = selectedCloudWatchlist();
+            const input = document.getElementById('cloud-watchlist-ticker');
+            const rawTicker = tickerOverride || (input && input.value) || '';
+            const ticker = String(rawTicker).toUpperCase().trim();
+            if (!selected) { setCloudWorkspaceStatus('Select a watchlist first.', 'error'); return; }
+            if (!/^[A-Z0-9.-]{1,12}$/.test(ticker)) {
+                setCloudWorkspaceStatus('Enter a valid ticker, for example NVDA.', 'error');
+                return;
+            }
+            await mutateCloudWorkspace(`/api/watchlists/${selected.id}/items`, {
+                method: 'POST', headers: authHeaders(true), body: JSON.stringify({ ticker }),
+            }, `${ticker} added to ${selected.name}.`);
+        }
+
+        async function removeTickerFromSelectedCloudWatchlist(ticker) {
+            const selected = selectedCloudWatchlist();
+            if (!selected) { setCloudWorkspaceStatus('Select a watchlist first.', 'error'); return; }
+            const normalizedTicker = String(ticker || '').toUpperCase().trim();
+            return await mutateCloudWorkspace(`/api/watchlists/${selected.id}/items?ticker=${encodeURIComponent(normalizedTicker)}`, {
+                method: 'DELETE', headers: authHeaders(),
+            }, `${normalizedTicker} removed from ${selected.name}.`);
+        }
+
+        async function createCloudPortfolio() {
+            const input = document.getElementById('cloud-portfolio-create');
+            const name = input && input.value.trim();
+            if (!name) { setCloudWorkspaceStatus('Enter a portfolio name first.', 'error'); return; }
+            await mutateCloudWorkspace('/api/portfolios', {
+                method: 'POST', headers: authHeaders(true), body: JSON.stringify({ name, currency: 'USD' }),
+            }, 'Portfolio created.', data => {
+                cloudWorkspace.selectedPortfolioId = cloudWorkspaceId(data.portfolio && data.portfolio.id);
+            });
+        }
+
+        async function renameCloudPortfolio() {
+            const selected = selectedCloudPortfolio();
+            const input = document.getElementById('cloud-portfolio-name');
+            const name = input && input.value.trim();
+            if (!selected) { setCloudWorkspaceStatus('Select a portfolio first.', 'error'); return; }
+            if (!name) { setCloudWorkspaceStatus('Enter a portfolio name first.', 'error'); return; }
+            await mutateCloudWorkspace(`/api/portfolios/${selected.id}`, {
+                method: 'PATCH', headers: authHeaders(true), body: JSON.stringify({ name }),
+            }, 'Portfolio renamed.');
+        }
+
+        async function archiveCloudPortfolio() {
+            const selected = selectedCloudPortfolio();
+            if (!selected) { setCloudWorkspaceStatus('Select a portfolio first.', 'error'); return; }
+            if (!window.confirm(`Archive portfolio “${selected.name}”? Existing history is retained.`)) return;
+            await mutateCloudWorkspace(`/api/portfolios/${selected.id}`, {
+                method: 'DELETE', headers: authHeaders(),
+            }, 'Portfolio archived.');
+        }
+
+        function setProfileSummary() {
+            const user = authState.user;
+            const initials = profileInitials(user);
+            const avatarButton = document.getElementById('profile-avatar-button');
+            const avatar = document.getElementById('profile-sheet-avatar');
+            const name = document.getElementById('profile-sheet-name');
+            const email = document.getElementById('profile-sheet-email');
+            if (avatarButton) avatarButton.textContent = initials;
+            if (avatar) avatar.textContent = initials;
+            if (!authState.authenticated || !user) {
+                if (name) name.textContent = authState.configured === false ? 'Portfolio Terminal' : 'Portfolio Terminal User';
+                if (email) email.textContent = authState.configured === false ? 'Cloud authentication is not configured' : 'Secure session required';
+                return;
+            }
+            if (name) name.textContent = user.username || user.display_name || 'Welcome to Portfolio Terminal';
+            if (email) email.textContent = user.email || 'Signed in securely';
+        }
+
+        function setAuthStatus(message, tone = '') {
+            const el = document.getElementById('profile-auth-status');
+            if (!el) return;
+            el.textContent = message || '';
+            el.className = `pt-auth-status${tone ? ` ${tone}` : ''}`;
+        }
+
+        function renderProfileAuthContent() {
+            setProfileSummary();
+            const host = document.getElementById('profile-auth-content');
+            if (!host) return;
+
+            if (authState.configured === null) {
+                host.innerHTML = '<div class="pt-sync-note">Checking the secure account service…</div>';
+                return;
+            }
+            if (authState.configured === false) {
+                host.innerHTML = '<div class="pt-sync-note">Cloud sign-in is not configured on this deployment yet. The terminal remains in legacy local-session mode until Supabase credentials are added.</div>';
+                return;
+            }
+            if (authState.recoveryMode) {
+                host.innerHTML = `
+                    <div class="pt-auth-stack">
+                        <p class="pt-sync-note" style="margin:0;">Choose a new password for your account.</p>
+                        <input id="auth-new-password" type="password" minlength="8" autocomplete="new-password" placeholder="New password (8+ characters)">
+                        <button type="button" class="pt-auth-action" onclick="submitPasswordRecovery()">Update password</button>
+                        <div id="profile-auth-status" class="pt-auth-status"></div>
+                    </div>`;
+                return;
+            }
+            if (authState.authenticated && authState.user) {
+                const user = authState.user;
+                const needsOnboarding = Boolean(user.needs_onboarding || !user.username);
+                if (needsOnboarding) {
+                    host.innerHTML = `
+                        <div class="pt-auth-stack">
+                            <div class="pt-sync-note" style="margin:0;">Welcome to Portfolio Terminal AI. Choose the username that will appear across your synced workspace.</div>
+                            <input id="onboarding-username" maxlength="32" autocomplete="username" placeholder="Username" value="${escapeHtml(user.is_provisional_username ? '' : (user.username || ''))}">
+                            <button type="button" class="pt-auth-action" onclick="completeOnboarding()">Continue to dashboard</button>
+                            <div id="profile-auth-status" class="pt-auth-status"></div>
+                        </div>`;
+                    return;
+                }
+                host.innerHTML = `
+                    <div class="pt-auth-stack">
+                        <div class="pt-sync-note" style="margin:0;">${authState.cloudSyncEnabled ? 'Cloud sync is active for watchlists, positions, and indicator preferences on this account.' : 'Your account is signed in, but cloud storage is not configured on this deployment yet.'}</div>
+                        ${authState.cloudSyncEnabled ? '<section id="cloud-workspace-manager" class="pt-workspace-manager" aria-label="Cloud workspace manager"><div id="cloud-workspace-content"></div></section><section id="alert-center-manager" class="pt-alert-manager" aria-label="Cloud alert rules and in-app notification inbox"><div id="alert-center-content"></div></section>' : ''}
+                        <button type="button" class="pt-auth-action secondary" onclick="signOut()">Sign out</button>
+                        <div id="profile-auth-status" class="pt-auth-status"></div>
+                    </div>`;
+                if (authState.cloudSyncEnabled) {
+                    renderCloudWorkspaceManager();
+                    renderAlertCenter();
+                }
+                return;
+            }
+
+            const isSignUp = authFormMode === 'sign-up';
+            host.innerHTML = `
+                <form class="pt-auth-stack" onsubmit="submitAuth(event)">
+                    <input id="auth-email" type="email" autocomplete="email" placeholder="Email" required>
+                    <input id="auth-password" type="password" minlength="8" autocomplete="${isSignUp ? 'new-password' : 'current-password'}" placeholder="Password" required>
+                    ${isSignUp ? '' : '<label style="display:flex; align-items:center; gap:8px; color:var(--text-muted); font-size:12px;"><input id="auth-remember" type="checkbox" checked style="width:auto; min-height:auto;">Remember this device</label>'}
+                    <button type="submit" class="pt-auth-action">${isSignUp ? 'Create account' : 'Sign in'}</button>
+                    ${authState.googleEnabled ? '<button type="button" class="pt-auth-action secondary" onclick="signInWithGoogle()">Continue with Google</button>' : ''}
+                    <div class="pt-auth-links">
+                        <button type="button" onclick="setAuthFormMode('${isSignUp ? 'sign-in' : 'sign-up'}')">${isSignUp ? 'Already have an account?' : 'Create account'}</button>
+                        ${isSignUp ? '' : '<button type="button" onclick="sendPasswordReset()">Forgot password?</button>'}
+                    </div>
+                    <div id="profile-auth-status" class="pt-auth-status"></div>
+                </form>`;
+        }
+
+        function setAuthFormMode(mode) {
+            authFormMode = mode === 'sign-up' ? 'sign-up' : 'sign-in';
+            renderProfileAuthContent();
+        }
+
+        async function loadAuthSession() {
+            const sessionEpoch = ++authSessionEpoch;
+            try {
+                const res = await authFetch('/api/me', { cache: 'no-store' });
+                if (sessionEpoch !== authSessionEpoch) return;
+                if (res.status === 404) {
+                    authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
+                } else {
+                    const data = await res.json();
+                    if (sessionEpoch !== authSessionEpoch) return;
+                    authState = {
+                        ...authState,
+                        configured: Boolean(data.auth_enabled ?? data.configured),
+                        authenticated: Boolean(data.authenticated),
+                        user: data.user || data.profile || null,
+                        googleEnabled: Boolean(data.google_enabled),
+                        cloudSyncEnabled: Boolean(data.cloud_sync_enabled),
+                        csrfToken: data.csrf_token || null,
+                    };
+                }
+            } catch (err) {
+                if (sessionEpoch !== authSessionEpoch) return;
+                console.warn('Unable to load account session:', err);
+                authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
+            }
+            if (sessionEpoch !== authSessionEpoch) return;
+            // A renewed session can belong to a different account. Clear the
+            // previous account's inbox before any new profile UI is rendered.
+            resetAlertCenter();
+            renderProfileAuthContent();
+            if (authState.authenticated && authState.cloudSyncEnabled) {
+                await loadCloudPreferences();
+                if (sessionEpoch !== authSessionEpoch) return;
+                await loadCloudWorkspace();
+                if (sessionEpoch !== authSessionEpoch) return;
+                void refreshAlertCenter({ quiet: true });
+                startAlertCenterPolling();
+            } else {
+                resetCloudWorkspace();
+            }
+            if (sessionEpoch !== authSessionEpoch) return;
+            if (authState.authenticated && authState.user && (authState.user.needs_onboarding || !authState.user.username)) openProfileSheet();
+        }
+
+        async function submitAuth(event) {
+            event.preventDefault();
+            const email = document.getElementById('auth-email').value.trim();
+            const password = document.getElementById('auth-password').value;
+            const remember = Boolean(document.getElementById('auth-remember')?.checked);
+            const endpoint = authFormMode === 'sign-up' ? '/api/auth/sign-up' : '/api/auth/sign-in';
+            setAuthStatus('Working securely…');
+            try {
+                const res = await authFetch(endpoint, {
+                    method: 'POST',
+                    headers: authHeaders(true),
+                    credentials: 'same-origin',
+                    body: JSON.stringify({ email, password, remember_me: remember }),
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || data.message || 'Unable to complete authentication.');
+                if (authFormMode === 'sign-up' && !data.authenticated) {
+                    setAuthStatus(data.message || 'Check your email to confirm the account.', 'success');
+                    return;
+                }
+                await loadAuthSession();
+                renderProfileAuthContent();
+            } catch (err) {
+                setAuthStatus(err.message || 'Unable to complete authentication.', 'error');
+            }
+        }
+
+        function signInWithGoogle() {
+            window.location.assign('/api/auth/google/start');
+        }
+
+        async function sendPasswordReset() {
+            const email = document.getElementById('auth-email')?.value.trim();
+            if (!email) {
+                setAuthStatus('Enter your email first, then request a reset link.', 'error');
+                return;
+            }
+            setAuthStatus('Sending reset email…');
+            try {
+                const res = await authFetch('/api/auth/forgot-password', {
+                    method: 'POST', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ email })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || data.message || 'Unable to send reset email.');
+                setAuthStatus(data.message || 'If this address exists, a reset link is on its way.', 'success');
+            } catch (err) {
+                setAuthStatus(err.message || 'Unable to send reset email.', 'error');
+            }
+        }
+
+        async function completeOnboarding() {
+            const username = document.getElementById('onboarding-username')?.value.trim();
+            if (!username) { setAuthStatus('Choose a username to continue.', 'error'); return; }
+            setAuthStatus('Saving your profile…');
+            try {
+                const res = await authFetch('/api/me', {
+                    method: 'PUT', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ username })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || data.message || 'Unable to save your profile.');
+                authState.user = data.user || data.profile || { ...authState.user, username, needs_onboarding: false };
+                authState.user.needs_onboarding = false;
+                renderProfileAuthContent();
+                closeProfileSheet();
+            } catch (err) {
+                setAuthStatus(err.message || 'Unable to save your profile.', 'error');
+            }
+        }
+
+        async function signOut() {
+            try {
+                await authFetch('/api/auth/sign-out', { method: 'POST', headers: authHeaders(true) });
+            } finally {
+                authSessionEpoch += 1;
+                authState = { configured: authState.configured, authenticated: false, user: null, googleEnabled: authState.googleEnabled, cloudSyncEnabled: false, csrfToken: null, recoveryMode: false };
+                resetCloudWorkspace();
+                resetAlertCenter();
+                watchlist = [];
+                activePositions = [];
+                renderWatchlist();
+                renderPortfolioTable();
+                updateHomeWatchlistSurface();
+                updateHomePortfolioSurface();
+                emaSettings = loadEmaSettings();
+                emaMasterEnabled = loadEmaMaster();
+                renderIndicatorsPanel();
+                updateEMASeries();
+                renderProfileAuthContent();
+            }
+        }
+
+        async function submitPasswordRecovery() {
+            const password = document.getElementById('auth-new-password')?.value;
+            if (!password || password.length < 8) { setAuthStatus('Use at least 8 characters.', 'error'); return; }
+            try {
+                const res = await authFetch('/api/auth/update-password', {
+                    method: 'POST', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ password })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || data.message || 'Unable to update password.');
+                authState.recoveryMode = false;
+                await loadAuthSession();
+                setAuthStatus('Password updated.', 'success');
+            } catch (err) {
+                setAuthStatus(err.message || 'Unable to update password.', 'error');
+            }
+        }
+
+        async function consumeAuthHash() {
+            const params = new URLSearchParams(window.location.hash.startsWith('#') ? window.location.hash.slice(1) : '');
+            const accessToken = params.get('access_token');
+            const type = params.get('type');
+            // Google uses the server-side PKCE callback. This legacy fragment
+            // exchange remains only for Supabase email confirmation/recovery.
+            if (!accessToken || !['recovery', 'signup'].includes(type || '')) return;
+            const refreshToken = params.get('refresh_token');
+            try {
+                const res = await authFetch('/api/auth/session', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ access_token: accessToken, refresh_token: refreshToken }),
+                });
+                if (!res.ok) throw new Error('Secure session exchange failed.');
+                history.replaceState(null, document.title, `${window.location.pathname}${window.location.search}`);
+                authState.recoveryMode = type === 'recovery';
+            } catch (err) {
+                console.warn('Auth callback could not create a secure session:', err);
+            }
+        }
+
+        async function loadCloudPreferences() {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) return;
+            try {
+                const res = await authFetch('/api/preferences', { headers: authHeaders(), cache: 'no-store' });
+                if (!res.ok) return;
+                const data = await res.json();
+                const preference = data.preferences || data;
+                const savedSettings = preference.ema_settings;
+                if (savedSettings && typeof savedSettings === 'object') {
+                    const merged = {};
+                    EMA_PERIODS.forEach(period => { merged[period] = { ...EMA_DEFAULTS[period], ...(savedSettings[period] || {}) }; });
+                    emaSettings = merged;
+                }
+                if (typeof preference.ema_master_enabled === 'boolean') emaMasterEnabled = preference.ema_master_enabled;
+                renderIndicatorsPanel();
+                updateEMASeries();
+            } catch (err) {
+                console.warn('Cloud preferences could not be loaded:', err);
+            }
+        }
+
+        function queuePreferenceSync() {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) return;
+            if (preferenceSyncTimer) clearTimeout(preferenceSyncTimer);
+            preferenceSyncTimer = window.setTimeout(async () => {
+                try {
+                    await authFetch('/api/preferences', {
+                        method: 'PUT', headers: authHeaders(true),
+                        body: JSON.stringify({ ema_settings: emaSettings, ema_master_enabled: emaMasterEnabled }),
+                    });
+                } catch (err) {
+                    console.warn('Cloud preferences could not be saved:', err);
+                }
+            }, 350);
+        }
+
+        function updateHomeWatchlistSurface() {
+            const el = document.getElementById('home-watchlist-count');
+            if (el) el.textContent = Array.isArray(watchlist) ? String(watchlist.length) : '0';
+        }
+
+        function updateHomePortfolioSurface() {
+            const positions = Array.isArray(activePositions) ? activePositions : [];
+            const pnl = positions.reduce((sum, position) => {
+                const value = Number(position.pnl);
+                return sum + (Number.isFinite(value) ? value : 0);
+            }, 0);
+            const pnlEl = document.getElementById('home-total-pnl');
+            const noteEl = document.getElementById('home-total-pnl-note');
+            const countEl = document.getElementById('home-position-count');
+            if (pnlEl) {
+                const sign = pnl > 0 ? '+' : '';
+                pnlEl.textContent = `${sign}$${Math.abs(pnl).toFixed(2)}`;
+                pnlEl.style.color = pnl > 0 ? 'var(--green)' : pnl < 0 ? 'var(--red)' : 'var(--pt-white)';
+            }
+            if (noteEl) {
+                noteEl.textContent = positions.length ? `${positions.length} open option position${positions.length === 1 ? '' : 's'}` : 'No open positions';
+                noteEl.classList.toggle('positive', pnl > 0);
+            }
+            if (countEl) countEl.textContent = String(positions.length);
+        }
+
+        function updateHomeMarketSurface(stats = {}) {
+            const hasStat = key => Object.prototype.hasOwnProperty.call(stats, key);
+            const readNumber = (key, fallback) => {
+                const value = hasStat(key) ? stats[key] : fallback;
+                return value === null || value === undefined || value === '' ? Number.NaN : Number(value);
+            };
+            const price = readNumber('current_price', currentLivePrice);
+            const previous = readNumber('prev_close', currentPrevClose);
+            const session = (hasStat('market_session') ? stats.market_session : currentMarketSession) || 'CLOSED';
+            const sessionNames = { REGULAR: 'Market open', PRE: 'Pre-market', POST: 'After-hours', CLOSED: 'Market closed', LOADING: 'Loading' };
+            const shortSessionNames = { REGULAR: 'Open', PRE: 'Pre', POST: 'Post', CLOSED: 'Closed', LOADING: 'Loading' };
+            const symbolEl = document.getElementById('home-live-symbol');
+            const priceEl = document.getElementById('home-live-price');
+            const changeEl = document.getElementById('home-live-change');
+            const sessionEl = document.getElementById('home-market-session');
+            const labelEl = document.getElementById('home-session-label');
+
+            if (symbolEl) symbolEl.textContent = currentTicker || '—';
+            if (priceEl) priceEl.textContent = Number.isFinite(price) ? `$${price.toFixed(2)}` : '—';
+            if (sessionEl) sessionEl.textContent = sessionNames[session] || session;
+            if (labelEl) labelEl.textContent = shortSessionNames[session] || session;
+
+            if (changeEl) {
+                if (Number.isFinite(price) && previous > 0) {
+                    const change = ((price - previous) / previous) * 100;
+                    changeEl.textContent = `${change >= 0 ? '+' : ''}${change.toFixed(2)}% vs previous close`;
+                    changeEl.style.color = change >= 0 ? 'var(--green)' : 'var(--red)';
+                } else {
+                    changeEl.textContent = 'Waiting for market data';
+                    changeEl.style.color = 'var(--text-muted)';
+                }
+            }
+        }
+
+        // --- 🔎 ค้นหาหุ้นจากฐานข้อมูล Ticker ฝั่ง Backend ---
+        // --- Reference category rail ---------------------------------------
+        // The catalog is server-provided and intentionally carries no made-up
+        // price data. Selecting a symbol simply opens the existing analysis UI.
+        function renderCategoryRailChips() {
+            const host = document.getElementById('category-rail-chips');
+            if (!host) return;
+            host.replaceChildren();
+            categoryRailCategories.forEach(category => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = `pt-category-chip${category === selectedCategoryRail ? ' is-active' : ''}`;
+                button.textContent = category;
+                button.setAttribute('aria-pressed', String(category === selectedCategoryRail));
+                button.addEventListener('click', () => selectCategoryRail(category));
+                host.appendChild(button);
+            });
+        }
+
+        function setCategoryRailMessage(message, isError = false) {
+            const host = document.getElementById('category-rail-instruments');
+            if (!host) return;
+            host.replaceChildren();
+            const messageEl = document.createElement('p');
+            messageEl.className = `pt-category-message${isError ? ' error' : ''}`;
+            messageEl.textContent = message;
+            host.appendChild(messageEl);
+        }
+
+        function renderCategoryRailInstruments(instruments) {
+            const host = document.getElementById('category-rail-instruments');
+            if (!host) return;
+            host.replaceChildren();
+            if (!Array.isArray(instruments) || !instruments.length) {
+                setCategoryRailMessage('No catalog instruments are available for this category.');
+                return;
+            }
+            instruments.forEach(instrument => {
+                const symbol = String(instrument && instrument.symbol || '').toUpperCase().trim();
+                if (!/^[A-Z0-9.-]{1,12}$/.test(symbol)) return;
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'pt-category-instrument';
+                button.title = `Open ${symbol} analysis`;
+                const symbolEl = document.createElement('strong');
+                symbolEl.textContent = symbol;
+                const nameEl = document.createElement('span');
+                nameEl.textContent = String(instrument.name || instrument.sector || 'Open analysis');
+                button.append(symbolEl, nameEl);
+                button.addEventListener('click', () => switchStock(symbol));
+                host.appendChild(button);
+            });
+            if (!host.childElementCount) setCategoryRailMessage('No valid symbols are available for this category.');
+        }
+
+        async function selectCategoryRail(category) {
+            const normalized = String(category || '').trim();
+            if (!categoryRailCategories.includes(normalized)) return;
+            selectedCategoryRail = normalized;
+            renderCategoryRailChips();
+            if (categoryRailAbortController && !categoryRailAbortController.signal.aborted) {
+                categoryRailAbortController.abort();
+            }
+            const controller = new AbortController();
+            categoryRailAbortController = controller;
+            const requestVersion = ++categoryRailRequestVersion;
+            setCategoryRailMessage(`Loading ${normalized} instruments…`);
+            try {
+                const response = await fetch(`/api/categories/${encodeURIComponent(normalized)}`, {
+                    cache: 'no-store', signal: controller.signal,
+                });
+                if (!response.ok) throw new Error(`Category request failed (${response.status}).`);
+                const data = await response.json();
+                if (controller.signal.aborted || requestVersion !== categoryRailRequestVersion) return;
+                renderCategoryRailInstruments(data && data.items);
+            } catch (error) {
+                if (error && error.name === 'AbortError') return;
+                if (requestVersion === categoryRailRequestVersion) {
+                    setCategoryRailMessage(error.message || 'Unable to load this category right now.', true);
+                }
+            } finally {
+                if (categoryRailAbortController === controller) categoryRailAbortController = null;
+            }
+        }
+
+        async function loadCategoryRail() {
+            setCategoryRailMessage('Loading categories…');
+            try {
+                const response = await fetch('/api/categories', { cache: 'no-store' });
+                if (!response.ok) throw new Error(`Category catalog request failed (${response.status}).`);
+                const data = await response.json();
+                categoryRailCategories = Array.isArray(data && data.items)
+                    ? data.items.map(item => String(item || '').trim()).filter(Boolean)
+                    : [];
+                if (!categoryRailCategories.length) {
+                    setCategoryRailMessage('The category catalog is currently empty.');
+                    return;
+                }
+                if (!categoryRailCategories.includes(selectedCategoryRail)) selectedCategoryRail = categoryRailCategories[0];
+                renderCategoryRailChips();
+                await selectCategoryRail(selectedCategoryRail);
+            } catch (error) {
+                setCategoryRailMessage(error.message || 'Unable to load market categories.', true);
+            }
+        }
+
+        async function fetchTickerMatches(val, signal) {
+            try {
+                const res = await fetch(`/api/tickers?q=${encodeURIComponent(val)}`, { signal, cache: 'no-store' });
+                if (!res.ok) return [];
                 return await res.json();
-            } catch (err) { return []; }
+            } catch (err) {
+                if (!isAbortError(err)) console.warn('Ticker search failed:', err);
+                return [];
+            }
         }
 
         searchInput.addEventListener('input', function () {
@@ -39,7 +1739,13 @@
 
             clearTimeout(searchDebounce);
             searchDebounce = setTimeout(async () => {
-                const matches = await fetchTickerMatches(val);
+                if (tickerSearchAbortController && !tickerSearchAbortController.signal.aborted) {
+                    tickerSearchAbortController.abort();
+                }
+                const controller = new AbortController();
+                tickerSearchAbortController = controller;
+                const matches = await fetchTickerMatches(val, controller.signal);
+                if (controller.signal.aborted || searchInput.value !== val) return;
                 autocompleteList.innerHTML = '';
                 if (matches.length > 0) {
                     autocompleteList.style.display = 'block';
@@ -139,28 +1845,20 @@
         };
 
         function loadEmaSettings() {
-            try {
-                const saved = JSON.parse(localStorage.getItem('emaSettings') || 'null');
-                if (saved) {
-                    const merged = {};
-                    EMA_PERIODS.forEach(p => { merged[p] = { ...EMA_DEFAULTS[p], ...(saved[p] || {}) }; });
-                    return merged;
-                }
-            } catch (e) { /* ignore corrupted storage */ }
             return JSON.parse(JSON.stringify(EMA_DEFAULTS));
         }
 
         function saveEmaSettings() {
-            try { localStorage.setItem('emaSettings', JSON.stringify(emaSettings)); } catch (e) { /* storage full/unavailable */ }
+            queuePreferenceSync();
         }
 
         // ปุ่มหลัก "เปิดใช้งาน EMA" — กดครั้งแรกให้ขึ้นทุกเส้นทันที ไม่ต้องเลือกทีละเส้น
         // ผู้ใช้ค่อยไปติ๊กเอาเส้นที่ไม่ต้องการออกทีหลังได้จากรายการด้านล่าง
         function loadEmaMaster() {
-            try { return localStorage.getItem('emaMasterEnabled') === 'true'; } catch (e) { return false; }
+            return false;
         }
         function saveEmaMaster() {
-            try { localStorage.setItem('emaMasterEnabled', String(emaMasterEnabled)); } catch (e) { /* storage full/unavailable */ }
+            queuePreferenceSync();
         }
 
         let emaSettings = loadEmaSettings();
@@ -346,10 +2044,36 @@
 
         // --- 🌐 API Integration Data Fetching ---
         async function fetchWatchlist() {
-            try {
-                const res = await fetch('/api/watchlist');
-                watchlist = await res.json();
+            const sessionEpoch = authSessionEpoch;
+            // On an auth-enabled deployment, a signed-out screen must not
+            // repopulate a previous cloud account through a late refresh.
+            // Auth-disabled deployments retain the legacy watchlist route.
+            if (authState.configured === true && !authState.authenticated) {
+                watchlist = [];
                 renderWatchlist();
+                updateHomeWatchlistSurface();
+                return;
+            }
+            if (cloudWorkspaceEnabled()) {
+                const loaded = cloudWorkspace.loaded || await loadCloudWorkspace();
+                if (sessionEpoch !== authSessionEpoch) return;
+                if (loaded) {
+                    syncSelectedCloudWatchlist();
+                } else {
+                    watchlist = [];
+                    renderWatchlist();
+                    updateHomeWatchlistSurface();
+                }
+                return;
+            }
+            try {
+                const res = await authFetch('/api/watchlist', { cache: 'no-store' });
+                if (!res.ok) throw new Error(`Watchlist request failed: ${res.status}`);
+                const items = await res.json();
+                if (sessionEpoch !== authSessionEpoch) return;
+                watchlist = Array.isArray(items) ? items : [];
+                renderWatchlist();
+                updateHomeWatchlistSurface();
             } catch (err) { console.error("Error fetching watchlist:", err); }
         }
 
@@ -491,7 +2215,7 @@ ${t}
             }
         }
 
-        async function fetchDashboardData() {
+        async function fetchDashboardDataLegacy() {
             isChangingData = true;
             document.getElementById('stats-title').innerText = `${currentTicker} Key Statistics`;
 
@@ -518,6 +2242,7 @@ ${t}
                 // เก็บราคาปิดวันก่อนหน้า/ราคาปิดปกติไว้ใช้คำนวณ % แบบ real-time
                 currentPrevClose = Number(stats.prev_close) || 0;
                 currentClosePrice = Number(stats.close_price) || 0;
+                updateHomeMarketSurface(stats);
 
                 document.getElementById('stat-pe').innerText = stats.pe_ratio;
                 setFairValueDisplay(stats.fair_value, stats.fair_value_upside_pct);
@@ -594,15 +2319,14 @@ ${t}
                 // 4. Connect WebSocket & Fetch Portfolio
                 if (currentMarketSession === "REGULAR") {
                     initWebSocket();
-                } else if (ws) {
-                    ws.close(); ws = null;
+                } else {
+                    closeLivePriceSocket();
                 }
                 await fetchPortfolio();
                 setTimeout(resetChartView, 50);
 
                 // 6. Phase 5: Full Gauge Suite (non-blocking)
                 loadFullGauges(currentTicker);
-                loadTerminalScore(currentTicker);
 
             } catch (err) {
                 console.error("Dashboard fetch error:", err);
@@ -611,15 +2335,124 @@ ${t}
             }
         }
 
-        function switchStock(ticker) { currentTicker = ticker; removeSRLines(); fetchDashboardData(); renderWatchlist(); }
-        function searchStock() { const input = document.getElementById('search-input').value.toUpperCase().trim(); if (!input) return; currentTicker = input; removeSRLines(); fetchDashboardData(); renderWatchlist(); }
+        async function fetchDashboardData() {
+            const context = makeDashboardContext();
+            isChangingData = true;
+            document.getElementById('stats-title').innerText = `${context.ticker} Key Statistics`;
+
+            try {
+                const [statsRes, chartRes] = await Promise.all([
+                    fetch(`/api/stats?ticker=${encodeURIComponent(context.ticker)}`, { signal: context.signal, cache: 'no-store' }),
+                    fetch(`/api/chart-data?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`, { signal: context.signal, cache: 'no-store' }),
+                ]);
+                if (!isCurrentView(context)) return;
+                if (!statsRes.ok) throw new Error(`Stats request failed: ${statsRes.status} ${statsRes.statusText}`);
+                if (!chartRes.ok) throw new Error(`Chart-data request failed: ${chartRes.status} ${chartRes.statusText}`);
+
+                const [stats, chartData] = await Promise.all([statsRes.json(), chartRes.json()]);
+                if (!isCurrentView(context)) return;
+                if (!Array.isArray(chartData) || chartData.length === 0) {
+                    throw new Error('Chart-data response empty or invalid');
+                }
+
+                const livePriceRaw = stats.current_price;
+                const livePriceNum = typeof livePriceRaw === 'number'
+                    ? livePriceRaw
+                    : (typeof livePriceRaw === 'string' && livePriceRaw.trim() !== '' ? Number(livePriceRaw) : NaN);
+                currentLivePrice = Number.isFinite(livePriceNum) ? livePriceNum : null;
+                currentMarketSession = stats.market_session || 'CLOSED';
+                currentPrevClose = Number(stats.prev_close) || 0;
+                currentClosePrice = Number(stats.close_price) || 0;
+
+                const livePriceEl = document.getElementById('live-price');
+                if (livePriceEl) {
+                    livePriceEl.innerText = Number.isFinite(currentLivePrice) ? `$${currentLivePrice.toFixed(2)}` : '-';
+                    livePriceEl.removeAttribute('data-stale');
+                    livePriceEl.removeAttribute('title');
+                }
+                updateHomeMarketSurface(stats);
+
+                document.getElementById('stat-pe').innerText = stats.pe_ratio;
+                setFairValueDisplay(stats.fair_value, stats.fair_value_upside_pct);
+                document.getElementById('stat-vol').innerText = stats.volume;
+                document.getElementById('stat-pcr').innerText = stats.put_call_ratio;
+                document.getElementById('iv-val').innerText = Number.isFinite(Number(stats.iv_rank)) ? `${Number(stats.iv_rank)}%` : '-';
+                document.getElementById('iv-fill').style.width = `${Math.min(Number.isFinite(Number(stats.iv_rank)) ? Number(stats.iv_rank) : 0, 100)}%`;
+
+                const sessionLabels = { REGULAR: '🟢 ตลาดเปิด', PRE: '🌅 Pre-Market', POST: '🌆 After-Hours', CLOSED: '🔒 ตลาดปิด' };
+                const badge = document.getElementById('session-badge');
+                badge.innerText = sessionLabels[currentMarketSession] || currentMarketSession;
+                badge.className = `market-session-badge session-${currentMarketSession}`;
+                document.getElementById('post-price').innerText = Number.isFinite(Number(stats.post_price)) ? `$${Number(stats.post_price).toFixed(2)}` : '-';
+                updatePriceChangeDisplay();
+
+                document.getElementById('call-score-val').innerText = `${stats.call_score}/100`;
+                document.getElementById('call-score-fill').style.width = `${stats.call_score}%`;
+                document.getElementById('put-score-val').innerText = `${stats.put_score}/100`;
+                document.getElementById('put-score-fill').style.width = `${stats.put_score}%`;
+
+                globalChartData = chartData;
+                const candles = chartData.map(d => ({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }));
+                const volumes = chartData.map(d => ({
+                    time: d.time,
+                    value: d.volume,
+                    color: d.close >= d.open ? '#00c57f' : '#ff3b30'
+                }));
+                candleSeries.setData(candles);
+                updateEMASeries();
+                volumeSeries.setData(volumes);
+                const logicalRange = chart.timeScale().getVisibleLogicalRange();
+                if (logicalRange) volumeChart.timeScale().setVisibleLogicalRange(logicalRange);
+                requestAnimationFrame(syncPriceScaleWidths);
+                renderDashboardOverlay();
+
+                const indRes = await fetch(`/api/indicators?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`, { signal: context.signal, cache: 'no-store' });
+                if (!isCurrentView(context)) return;
+                if (!indRes.ok) throw new Error(`Indicators request failed: ${indRes.status} ${indRes.statusText}`);
+                const indicators = await indRes.json();
+                if (!isCurrentView(context)) return;
+                srData = indicators;
+                renderSRLadder();
+
+                if (currentMarketSession === 'REGULAR') initWebSocket(context);
+                else closeLivePriceSocket();
+                fetchPortfolio();
+                window.setTimeout(() => { if (isCurrentView(context)) resetChartView(); }, 50);
+                loadFullGauges(context);
+            } catch (err) {
+                if (!isAbortError(err) && isCurrentView(context)) {
+                    console.error('Dashboard fetch error:', err);
+                }
+            } finally {
+                if (isCurrentView(context)) isChangingData = false;
+            }
+        }
+
+        function switchStock(ticker) {
+            const nextTicker = String(ticker || '').toUpperCase().trim();
+            if (!/^[A-Z0-9.-]{1,12}$/.test(nextTicker)) return;
+            invalidateViewRequests();
+            closeLivePriceSocket();
+            currentTicker = nextTicker;
+            currentLivePrice = null;
+            updateHomeMarketSurface({ current_price: null, prev_close: null, market_session: 'LOADING' });
+            removeSRLines();
+            fetchDashboardData();
+            renderWatchlist();
+        }
+
+        function searchStock() {
+            const input = document.getElementById('search-input').value.toUpperCase().trim();
+            if (!input) return;
+            switchStock(input);
+        }
 
         // 🛠️ [แก้บั๊ก] เดิม Volume ของแท่งล่าสุดจะค้างอยู่ค่าตอนโหลดหน้าครั้งแรกตลอด เพราะ
         // WebSocket ส่งมาแค่ "ราคา" ไม่มี "วอลลุ่ม" เลย ฟังก์ชันนี้จะดึงแท่งเทียน+วอลลุ่มชุดล่าสุด
         // มาแทนที่เป็นระยะ เพื่อให้ Volume ตรงกับแท่งราคาจริงเสมอ โดยไม่รบกวนตำแหน่งที่ผู้ใช้กำลังดูอยู่
         // (setData แทนที่ทั้งชุดทุกครั้ง จึงไม่มีแท่งซ้อนหรือช่องว่างผิดปกติ เพราะ time เดียวกันจะถูกอัปเดตทับ ไม่ใช่เพิ่มใหม่)
         let isRefreshingChart = false;
-        async function refreshChartOnly() {
+        async function refreshChartOnlyLegacy() {
             if (isChangingData || isRefreshingChart) return; // อย่าชนกับการโหลดข้อมูลเต็มรูปแบบ (เปลี่ยนหุ้น/timeframe)
             isRefreshingChart = true;
             try {
@@ -663,6 +2496,57 @@ ${t}
             }
         }
 
+        async function refreshChartOnly() {
+            if (!isPageVisible || !isNetworkOnline || isChangingData || isRefreshingChart) return;
+            if (chartRefreshAbortController && !chartRefreshAbortController.signal.aborted) {
+                chartRefreshAbortController.abort();
+            }
+            const controller = new AbortController();
+            chartRefreshAbortController = controller;
+            const context = {
+                epoch: viewEpoch,
+                ticker: currentTicker,
+                timeframe: currentTimeframe,
+                signal: controller.signal,
+            };
+            isRefreshingChart = true;
+
+            try {
+                const chartRes = await fetch(
+                    `/api/chart-data?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`,
+                    { signal: context.signal, cache: 'no-store' }
+                );
+                if (!isCurrentView(context)) return;
+                if (!chartRes.ok) throw new Error(`Chart refresh failed: ${chartRes.status} ${chartRes.statusText}`);
+                const chartData = await chartRes.json();
+                if (!isCurrentView(context) || !Array.isArray(chartData) || chartData.length === 0) return;
+
+                globalChartData = chartData;
+                const candles = chartData.map(d => ({ time: d.time, open: d.open, high: d.high, low: d.low, close: d.close }));
+                const volumes = chartData.map(d => ({
+                    time: d.time,
+                    value: d.volume,
+                    color: d.close >= d.open ? '#00c57f' : '#ff3b30'
+                }));
+                const savedRange = chart.timeScale().getVisibleLogicalRange();
+                candleSeries.setData(candles);
+                volumeSeries.setData(volumes);
+                updateEMASeries();
+                if (savedRange && isCurrentView(context)) {
+                    isSyncing = true;
+                    chart.timeScale().setVisibleLogicalRange(savedRange);
+                    volumeChart.timeScale().setVisibleLogicalRange(savedRange);
+                    isSyncing = false;
+                }
+                requestAnimationFrame(syncPriceScaleWidths);
+            } catch (err) {
+                if (!isAbortError(err) && isCurrentView(context)) console.error('Chart refresh error:', err);
+            } finally {
+                if (chartRefreshAbortController === controller) chartRefreshAbortController = null;
+                if (controller.signal.aborted || chartRefreshAbortController === null) isRefreshingChart = false;
+            }
+        }
+
         let chartRefreshTimer = null;
         function startChartAutoRefresh() {
             if (chartRefreshTimer) clearInterval(chartRefreshTimer);
@@ -670,19 +2554,64 @@ ${t}
         }
 
         async function addCurrentToWatchlist() {
-            await fetch(`/api/watchlist?ticker=${currentTicker}`, { method: 'POST' });
-            fetchWatchlist();
+            if (authState.configured === true && !authState.authenticated) {
+                openProfileSheet();
+                setAuthStatus('Sign in before changing a cloud watchlist.', 'error');
+                return;
+            }
+            if (cloudWorkspaceEnabled()) {
+                if (!selectedCloudWatchlist()) await loadCloudWorkspace();
+                if (selectedCloudWatchlist()) {
+                    await addTickerToSelectedCloudWatchlist(currentTicker);
+                    return;
+                }
+                setCloudWorkspaceStatus('Your cloud watchlist is unavailable. Try opening Profile and refreshing the workspace.', 'error');
+                return;
+            }
+            try {
+                const res = await authFetch(`/api/watchlist?ticker=${encodeURIComponent(currentTicker)}`, {
+                    method: 'POST', headers: authHeaders(),
+                });
+                if (!res.ok) throw new Error(`Watchlist update failed: ${res.status}`);
+                fetchWatchlist();
+            } catch (err) {
+                console.error('Error adding watchlist item:', err);
+            }
         }
         async function deleteWatchlist(ticker) {
-            await fetch(`/api/watchlist/${ticker}`, { method: 'DELETE' });
-            if (currentTicker === ticker) currentTicker = watchlist[0] || "NVDA";
-            fetchWatchlist();
-            if (currentTicker === ticker) fetchDashboardData();
+            const wasCurrent = currentTicker === ticker;
+            try {
+                if (cloudWorkspaceEnabled()) {
+                    if (!selectedCloudWatchlist()) await loadCloudWorkspace();
+                    if (!selectedCloudWatchlist()) {
+                        setCloudWorkspaceStatus('Your cloud watchlist is unavailable. Try opening Profile and refreshing the workspace.', 'error');
+                        return;
+                    }
+                    const result = await removeTickerFromSelectedCloudWatchlist(ticker);
+                    if (result && wasCurrent) switchStock(watchlist[0] || 'NVDA');
+                    return;
+                }
+                const res = await authFetch(`/api/watchlist/${encodeURIComponent(ticker)}`, {
+                    method: 'DELETE', headers: authHeaders(),
+                });
+                if (!res.ok) throw new Error(`Watchlist delete failed: ${res.status}`);
+                watchlist = await res.json();
+                updateHomeWatchlistSurface();
+                if (wasCurrent) switchStock(watchlist[0] || 'NVDA');
+                else renderWatchlist();
+            } catch (err) {
+                console.error('Error deleting watchlist item:', err);
+            }
         }
 
         function changeTimeframe(tf, btn) {
+            if (tf === currentTimeframe) return;
             document.querySelectorAll('#timeframe-group button').forEach(b => b.classList.remove('active'));
-            btn.classList.add('active'); currentTimeframe = tf; removeSRLines(); fetchDashboardData();
+            btn.classList.add('active');
+            invalidateViewRequests();
+            currentTimeframe = tf;
+            removeSRLines();
+            fetchDashboardData();
         }
 
         function toggleSupportResistance() {
@@ -721,31 +2650,62 @@ ${t}
 
         // --- 💼 Portfolio Engine Via API ---
         async function fetchPortfolio() {
-            try {
-                const res = await fetch('/api/positions');
-                activePositions = await res.json();
+            const sessionEpoch = authSessionEpoch;
+            if (authState.configured === true && !authState.authenticated) {
+                activePositions = [];
                 renderPortfolioTable();
+                updateHomePortfolioSurface();
+                return;
+            }
+            try {
+                const res = await authFetch('/api/positions', { cache: 'no-store' });
+                if (!res.ok) throw new Error(`Portfolio request failed: ${res.status}`);
+                const positions = await res.json();
+                if (sessionEpoch !== authSessionEpoch) return;
+                activePositions = Array.isArray(positions) ? positions : [];
+                renderPortfolioTable();
+                updateHomePortfolioSurface();
             } catch (err) { console.error("Error fetching portfolio:", err); }
         }
 
         function renderPortfolioTable() {
             const tbody = document.getElementById('portfolio-rows');
+            const finiteNumber = value => {
+                if (value === null || value === undefined || value === '') return null;
+                const number = Number(value);
+                return Number.isFinite(number) ? number : null;
+            };
             if (activePositions.length === 0) {
                 tbody.innerHTML = `<tr><td colspan="11" style="text-align:center; color:var(--text-muted); padding:20px;">💼 พอร์ตว่างเปล่า ลองระบุเงื่อนไขด้านบนเพื่อเปิดสถานะสัญญาจำลอง</td></tr>`;
                 return;
             }
             tbody.innerHTML = activePositions.map(p => {
-                const currentUPrice = parseFloat(p.current_underlying_price || p.entry_underlying_price);
-                const pnl = parseFloat(p.pnl);
-                const pnlPercent = parseFloat(p.pnl_percent);
+                const liveUnderlying = finiteNumber(p.current_underlying_price);
+                const entryUnderlying = finiteNumber(p.entry_underlying_price);
+                const currentUPrice = liveUnderlying !== null && liveUnderlying > 0 ? liveUnderlying : (entryUnderlying !== null && entryUnderlying > 0 ? entryUnderlying : null);
+                const staleUnderlying = !(liveUnderlying !== null && liveUnderlying > 0);
+                const pnl = finiteNumber(p.pnl);
+                const pnlPercent = finiteNumber(p.pnl_percent);
+                const premiumPaid = finiteNumber(p.premium_paid);
+                const quantity = finiteNumber(p.quantity);
                 const ivDisp = p.iv ? p.iv + '%' : '-';
                 const deltaDisp = p.delta ? p.delta : '-';
 
-                let currentSellPrice = parseFloat(p.premium_paid) + (pnl / (p.quantity * 100));
-                if (currentSellPrice < 0.01) currentSellPrice = 0.01;
+                let currentSellPrice = null;
+                if (premiumPaid !== null && pnl !== null && quantity !== null && quantity > 0) {
+                    currentSellPrice = premiumPaid + (pnl / (quantity * 100));
+                    if (currentSellPrice < 0.01) currentSellPrice = 0.01;
+                    if (!Number.isFinite(currentSellPrice)) currentSellPrice = null;
+                }
 
-                const color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
-                const sign = pnl >= 0 ? '+' : '';
+                const color = pnl === null ? 'var(--text-muted)' : (pnl >= 0 ? 'var(--green)' : 'var(--red)');
+                const sign = pnl !== null && pnl >= 0 ? '+' : '';
+                const underlyingDisplay = currentUPrice === null
+                    ? '<span style="color:var(--text-muted);">—</span>'
+                    : `$${currentUPrice.toFixed(2)}${staleUnderlying ? ' <span style="font-size:10px; color:var(--gold);">stale</span>' : ''}`;
+                const pnlDisplay = pnl === null
+                    ? '<span style="color:var(--text-muted);">—</span>'
+                    : `${sign}$${pnl.toFixed(2)} <span style="font-size:12px;">(${pnlPercent === null ? '—' : `${sign}${pnlPercent.toFixed(2)}%`})</span>`;
 
                 return `
 <tr>
@@ -753,12 +2713,12 @@ ${t}
 <td style="color:${p.option_type === 'CALL' ? 'var(--green)' : 'var(--red)'}; font-weight:bold;">${p.option_type}</td>
 <td>$${p.strike_price}</td>
 <td>${p.expiration}</td>
-<td>$${parseFloat(p.premium_paid).toFixed(2)}</td>
+<td>${premiumPaid === null ? '—' : `$${premiumPaid.toFixed(2)}`}</td>
 <td>${p.quantity}</td>
 <td style="color:var(--text-muted); font-size:12px;">${ivDisp} / ${deltaDisp}</td>
-<td id="table-underlying-${p.id}">$${currentUPrice.toFixed(2)}</td>
-<td id="table-sellprice-${p.id}" style="font-weight:bold; color:var(--gold);">$${currentSellPrice.toFixed(2)}</td>
-<td id="table-pnl-${p.id}" class="pnl-cell" style="color:${color}">${sign}$${pnl.toFixed(2)} <span style="font-size:12px;">(${sign}${pnlPercent.toFixed(2)}%)</span></td>
+<td id="table-underlying-${p.id}" title="${staleUnderlying ? 'Live quote unavailable; showing entry price when available.' : 'Latest underlying price'}">${underlyingDisplay}</td>
+<td id="table-sellprice-${p.id}" style="font-weight:bold; color:${currentSellPrice === null ? 'var(--text-muted)' : 'var(--gold)'};">${currentSellPrice === null ? '—' : `$${currentSellPrice.toFixed(2)}`}</td>
+<td id="table-pnl-${p.id}" class="pnl-cell" style="color:${color}">${pnlDisplay}</td>
 <td><button style="background:rgba(255,59,48,0.1); color:var(--red); border:1px solid var(--red); padding:6px 10px; border-radius:4px; font-weight:bold; cursor:pointer;" onclick="closePosition(${p.id})">ปิดสัญญา</button></td>
 </tr>
 `}).join('');
@@ -776,33 +2736,75 @@ ${t}
                 iv: parseFloat(document.getElementById('form-iv').value) || 0.0,
                 delta: parseFloat(document.getElementById('form-delta').value) || 0.0
             };
+            const portfolioId = cloudWorkspaceId(document.getElementById('form-portfolio-id')?.value);
+            if (cloudWorkspaceEnabled() && portfolioId) payload.portfolio_id = portfolioId;
 
-            await fetch('/api/positions', {
+            const res = await authFetch('/api/positions', {
                 method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(payload)
+                headers: authHeaders(true),
+                body: JSON.stringify(payload),
             });
+            if (!res.ok) {
+                const error = await res.json().catch(() => ({}));
+                throw new Error(error.detail || 'Unable to add position.');
+            }
             document.getElementById('pos-form').reset();
+            updatePositionPortfolioSelector();
             fetchPortfolio();
         }
 
         async function closePosition(id) {
-            await fetch(`/api/positions/${id}`, { method: 'DELETE' });
+            const res = await authFetch(`/api/positions/${id}`, {
+                method: 'DELETE', headers: authHeaders(),
+            });
+            if (!res.ok) throw new Error('Unable to close position.');
             fetchPortfolio();
         }
 
         // --- ⚡ Real-Time WebSocket Connection ---
-        function initWebSocket() {
-            if (ws) ws.close();
-            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${protocol}//${window.location.host}/ws/price/${currentTicker}`;
-            ws = new WebSocket(wsUrl);
+        function closeLivePriceSocketLegacy(resetRetries = true) {
+            if (wsReconnectTimer) {
+                clearTimeout(wsReconnectTimer);
+                wsReconnectTimer = null;
+            }
+            if (resetRetries) wsReconnectAttempts = 0;
+            if (!ws) return;
 
-            ws.onmessage = function (event) {
+            const socket = ws;
+            ws = null;
+            socket.onclose = null;
+            socket.onerror = null;
+            socket.close();
+        }
+
+        function scheduleLivePriceReconnectLegacy(liveTicker) {
+            if (wsReconnectTimer || liveTicker !== currentTicker || currentMarketSession !== "REGULAR") return;
+            const delay = Math.min(1000 * (2 ** wsReconnectAttempts), 30000);
+            wsReconnectAttempts = Math.min(wsReconnectAttempts + 1, 5);
+            wsReconnectTimer = window.setTimeout(() => {
+                wsReconnectTimer = null;
+                if (liveTicker === currentTicker && currentMarketSession === "REGULAR") initWebSocket();
+            }, delay);
+        }
+
+        function initWebSocketLegacy() {
+            closeLivePriceSocket(false);
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const liveTicker = currentTicker;
+            const wsUrl = `${protocol}//${window.location.host}/ws/price/${liveTicker}`;
+            const socket = new WebSocket(wsUrl);
+            ws = socket;
+
+            socket.onopen = function () {
+                wsReconnectAttempts = 0;
+            };
+
+            socket.onmessage = function (event) {
+                if (socket !== ws || liveTicker !== currentTicker) return;
                 const data = JSON.parse(event.data);
                 if (data.market_session && data.market_session !== "REGULAR") {
                     currentMarketSession = data.market_session;
-                    ws.close(); ws = null;
+                    closeLivePriceSocket();
                     return;
                 }
                 const newPrice = data.price;
@@ -817,6 +2819,7 @@ ${t}
 
                 // ราคาขยับ -> คำนวณ % ใหม่ทุกครั้ง
                 updatePriceChangeDisplay();
+                updateHomeMarketSurface({ current_price: currentLivePrice, prev_close: currentPrevClose, market_session: currentMarketSession });
 
                 recomputeSRDistances(currentLivePrice);
 
@@ -869,9 +2872,713 @@ ${t}
                     }
                 });
             };
+
+            socket.onclose = function () {
+                if (socket !== ws) return;
+                ws = null;
+                scheduleLivePriceReconnect(liveTicker);
+            };
         }
 
         // --- 🔮 What-If Simulator Logic ---
+        function stopLiveSocketWatchdog() {
+            if (wsWatchdogTimer) {
+                clearInterval(wsWatchdogTimer);
+                wsWatchdogTimer = null;
+            }
+        }
+
+        function closeLivePriceSocket(resetRetries = true) {
+            if (wsReconnectTimer) {
+                clearTimeout(wsReconnectTimer);
+                wsReconnectTimer = null;
+            }
+            stopLiveSocketWatchdog();
+            if (resetRetries) wsReconnectAttempts = 0;
+            wsConnectionEpoch += 1;
+            if (!ws) return;
+
+            const socket = ws;
+            ws = null;
+            socket.onopen = null;
+            socket.onclose = null;
+            socket.onerror = null;
+            socket.onmessage = null;
+            if (socket.readyState === WebSocket.OPEN || socket.readyState === WebSocket.CONNECTING) {
+                socket.close(1000, 'Client reconnecting');
+            }
+        }
+
+        function canRunLiveFeed(context) {
+            return isCurrentView(context) && isNetworkOnline && currentMarketSession === 'REGULAR';
+        }
+
+        function scheduleLivePriceReconnect(context) {
+            if (wsReconnectTimer || !canRunLiveFeed(context)) return;
+            const baseDelay = Math.min(1000 * (2 ** wsReconnectAttempts), 30000);
+            const delay = Math.round(baseDelay * (0.85 + Math.random() * 0.3));
+            wsReconnectAttempts = Math.min(wsReconnectAttempts + 1, 5);
+            wsReconnectTimer = window.setTimeout(() => {
+                wsReconnectTimer = null;
+                if (canRunLiveFeed(context)) initWebSocket(context);
+            }, delay);
+        }
+
+        function startLiveSocketWatchdog(socket, context, connectionId) {
+            stopLiveSocketWatchdog();
+            wsWatchdogTimer = window.setInterval(() => {
+                if (socket !== ws || connectionId !== wsConnectionEpoch || !isCurrentView(context)) {
+                    stopLiveSocketWatchdog();
+                    return;
+                }
+                if (!isNetworkOnline || Date.now() - wsLastMessageAt <= 20000) return;
+                socket.close(4000, 'Live quote heartbeat timed out');
+            }, 5000);
+        }
+
+        function applyLiveQuote(data, context) {
+            if (!isCurrentView(context) || !data || data.ticker !== context.ticker) return;
+            if (data.market_session) currentMarketSession = data.market_session;
+            const newPrice = Number(data.price);
+            const isValidPrice = Number.isFinite(newPrice) && newPrice > 0;
+            const lastPrice = currentLivePrice;
+            const priceDisplay = document.getElementById('live-price');
+
+            if (priceDisplay) {
+                if (data.stale) {
+                    priceDisplay.dataset.stale = 'true';
+                    priceDisplay.title = 'Last known polling price. The market-data provider is temporarily unavailable.';
+                } else {
+                    priceDisplay.removeAttribute('data-stale');
+                    priceDisplay.title = `${data.provider || 'Market data'} polling update`;
+                }
+            }
+
+            if (currentMarketSession !== 'REGULAR') {
+                updateHomeMarketSurface({ current_price: isValidPrice ? newPrice : currentLivePrice, prev_close: currentPrevClose, market_session: currentMarketSession });
+                closeLivePriceSocket();
+                return;
+            }
+            if (!isValidPrice) return;
+
+            currentLivePrice = newPrice;
+            if (priceDisplay) {
+                priceDisplay.innerText = `$${currentLivePrice.toFixed(2)}`;
+                priceDisplay.style.color = Number.isFinite(lastPrice)
+                    ? (currentLivePrice >= lastPrice ? 'var(--green)' : 'var(--red)')
+                    : 'var(--pt-white)';
+            }
+            updatePriceChangeDisplay();
+            updateHomeMarketSurface({ current_price: currentLivePrice, prev_close: currentPrevClose, market_session: currentMarketSession });
+            recomputeSRDistances(currentLivePrice);
+
+            if (globalChartData.length > 0) {
+                const lastData = globalChartData[globalChartData.length - 1];
+                lastData.close = currentLivePrice;
+                if (currentLivePrice > lastData.high) lastData.high = currentLivePrice;
+                if (currentLivePrice < lastData.low) lastData.low = currentLivePrice;
+                candleSeries.update(lastData);
+                updateEMASeries();
+            }
+
+            activePositions.forEach(position => {
+                if (position.ticker !== currentTicker) return;
+                const entryUnderlying = parseFloat(position.entry_underlying_price);
+                const initialPremium = parseFloat(position.premium_paid);
+                if (!Number.isFinite(entryUnderlying) || !Number.isFinite(initialPremium)) return;
+                let currentPremium = initialPremium;
+                if (position.delta && parseFloat(position.delta) !== 0) {
+                    let delta = parseFloat(position.delta);
+                    if (position.option_type === 'PUT' && delta > 0) delta = -delta;
+                    currentPremium = initialPremium + (delta * (currentLivePrice - entryUnderlying));
+                } else if (position.option_type === 'CALL') {
+                    currentPremium += (currentLivePrice - entryUnderlying) * 0.5;
+                } else {
+                    currentPremium += (entryUnderlying - currentLivePrice) * 0.5;
+                }
+                currentPremium = Math.max(currentPremium, 0.01);
+                const pnl = (currentPremium - initialPremium) * 100 * position.quantity;
+                const principal = initialPremium * position.quantity * 100;
+                const pnlPercent = principal > 0 ? (pnl / principal) * 100 : 0;
+                const cellPrice = document.getElementById(`table-underlying-${position.id}`);
+                const cellPnl = document.getElementById(`table-pnl-${position.id}`);
+                const cellSellPrice = document.getElementById(`table-sellprice-${position.id}`);
+                if (cellPrice) cellPrice.innerText = `$${currentLivePrice.toFixed(2)}`;
+                if (cellSellPrice) cellSellPrice.innerText = `$${currentPremium.toFixed(2)}`;
+                if (cellPnl) {
+                    const sign = pnl >= 0 ? '+' : '';
+                    cellPnl.innerHTML = `${sign}$${pnl.toFixed(2)} <span style="font-size:12px;">(${sign}${pnlPercent.toFixed(2)}%)</span>`;
+                    cellPnl.style.color = pnl >= 0 ? 'var(--green)' : 'var(--red)';
+                }
+            });
+        }
+
+        function initWebSocket(context = currentViewContext()) {
+            if (!canRunLiveFeed(context)) return;
+            closeLivePriceSocket(false);
+            const connectionId = ++wsConnectionEpoch;
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = `${protocol}//${window.location.host}/ws/price/${encodeURIComponent(context.ticker)}`;
+            let socket;
+            try {
+                socket = new WebSocket(wsUrl);
+            } catch (err) {
+                console.warn('Live socket could not be opened:', err);
+                scheduleLivePriceReconnect(context);
+                return;
+            }
+            ws = socket;
+            wsLastSequence = 0;
+            wsLastMessageAt = Date.now();
+
+            socket.onopen = () => {
+                if (socket !== ws || connectionId !== wsConnectionEpoch || !isCurrentView(context)) {
+                    socket.close(1000, 'Stale connection');
+                    return;
+                }
+                wsReconnectAttempts = 0;
+                wsLastMessageAt = Date.now();
+                startLiveSocketWatchdog(socket, context, connectionId);
+            };
+
+            socket.onmessage = event => {
+                if (socket !== ws || connectionId !== wsConnectionEpoch || !isCurrentView(context)) return;
+                let data;
+                try {
+                    data = JSON.parse(event.data);
+                } catch (err) {
+                    console.warn('Ignoring malformed live quote payload:', err);
+                    return;
+                }
+                if (!data || data.type !== 'quote' || data.ticker !== context.ticker) return;
+                const sequence = Number(data.seq);
+                if (Number.isFinite(sequence) && sequence <= wsLastSequence) return;
+                if (Number.isFinite(sequence)) wsLastSequence = sequence;
+                wsLastMessageAt = Date.now();
+                applyLiveQuote(data, context);
+            };
+
+            socket.onerror = () => {
+                if (socket === ws && connectionId === wsConnectionEpoch) socket.close();
+            };
+
+            socket.onclose = () => {
+                if (socket !== ws || connectionId !== wsConnectionEpoch) return;
+                ws = null;
+                stopLiveSocketWatchdog();
+                scheduleLivePriceReconnect(context);
+            };
+        }
+
+        async function reconcileLiveState() {
+            if (!isNetworkOnline) return;
+            const context = currentViewContext();
+            try {
+                const res = await fetch(`/api/quote?ticker=${encodeURIComponent(context.ticker)}`, { cache: 'no-store' });
+                if (res.ok) {
+                    const quote = await res.json();
+                    if (isCurrentView(context)) applyLiveQuote(quote, context);
+                }
+            } catch (err) {
+                console.warn('Live quote reconciliation failed:', err);
+            }
+            if (isCurrentView(context)) fetchDashboardData();
+        }
+
+        function requestTerminalResync(delay = 0) {
+            if (terminalResyncTimer) clearTimeout(terminalResyncTimer);
+            terminalResyncTimer = window.setTimeout(() => {
+                terminalResyncTimer = null;
+                reconcileLiveState();
+            }, delay);
+        }
+
+        document.addEventListener('visibilitychange', () => {
+            isPageVisible = document.visibilityState === 'visible';
+            if (isPageVisible) {
+                requestTerminalResync();
+                if (alertCenterEnabled()) {
+                    void refreshAlertCenter({ quiet: true });
+                    startAlertCenterPolling();
+                }
+            } else {
+                stopAlertCenterPolling();
+            }
+        });
+        window.addEventListener('online', () => {
+            isNetworkOnline = true;
+            requestTerminalResync();
+            if (alertCenterEnabled()) {
+                void refreshAlertCenter({ quiet: true });
+                startAlertCenterPolling();
+            }
+        });
+        window.addEventListener('offline', () => {
+            isNetworkOnline = false;
+            closeLivePriceSocket(false);
+            stopAlertCenterPolling();
+        });
+        window.addEventListener('pagehide', () => {
+            closeLivePriceSocket(false);
+            invalidateViewRequests();
+            stopAlertCenterPolling();
+        });
+        window.addEventListener('pageshow', () => {
+            isPageVisible = true;
+            isNetworkOnline = navigator.onLine;
+            requestTerminalResync();
+            if (alertCenterEnabled()) {
+                void refreshAlertCenter({ quiet: true });
+                startAlertCenterPolling();
+            }
+        });
+
+        // --- Calculator desk -------------------------------------------------
+        // These inputs deliberately stay in the current page only.  The server
+        // validates every value again and no calculator value is persisted.
+        let activeToolsCalculator = 'position';
+        let toolsGrowthMode = 'compound';
+        let toolsCalculatorAbortController = null;
+        let toolsCalculatorRequestVersion = 0;
+
+        function toolsCalculatorMarketPrice() {
+            const live = Number(currentLivePrice);
+            if (Number.isFinite(live) && live > 0) return live;
+            const latestBar = Array.isArray(globalChartData) ? globalChartData[globalChartData.length - 1] : null;
+            const close = Number(latestBar && latestBar.close);
+            return Number.isFinite(close) && close > 0 ? close : '';
+        }
+
+        function toolsCalculatorInput(id, label, options = {}) {
+            const value = options.value;
+            const numericValue = value !== '' && value !== undefined && value !== null && Number.isFinite(Number(value))
+                ? ` value="${Number(value)}"`
+                : '';
+            const min = options.min !== undefined ? ` min="${options.min}"` : '';
+            const step = options.step || 'any';
+            const placeholder = options.placeholder ? ` placeholder="${options.placeholder}"` : '';
+            const wide = options.wide ? ' wide' : '';
+            return `<label class="pt-tools-field${wide}"><span>${label}</span><input id="${id}" type="number" inputmode="decimal" step="${step}"${min}${numericValue}${placeholder}></label>`;
+        }
+
+        function toolsCalculatorSelect(id, label, options, selected, wide = false) {
+            const items = options.map(option => {
+                const isSelected = option.value === selected ? ' selected' : '';
+                return `<option value="${option.value}"${isSelected}>${option.label}</option>`;
+            }).join('');
+            return `<label class="pt-tools-field${wide ? ' wide' : ''}"><span>${label}</span><select id="${id}">${items}</select></label>`;
+        }
+
+        function renderToolsCalculatorFields() {
+            const host = document.getElementById('tools-calculator-fields');
+            const submit = document.getElementById('tools-calculator-submit');
+            if (!host || !submit) return;
+            const marketPrice = toolsCalculatorMarketPrice();
+            let fields = '';
+            let buttonText = 'Calculate';
+
+            if (activeToolsCalculator === 'position') {
+                buttonText = 'Calculate position';
+                fields = [
+                    toolsCalculatorInput('tools-position-account', 'Account value ($)', { value: 10000, min: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-position-risk', 'Risk per trade (%)', { value: 1, min: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-position-entry', 'Entry price ($)', { value: marketPrice, min: 0, step: '0.01', placeholder: 'Current price' }),
+                    toolsCalculatorInput('tools-position-stop', 'Stop price ($)', { min: 0, step: '0.01' }),
+                    toolsCalculatorSelect('tools-position-side', 'Position side', [
+                        { value: 'LONG', label: 'Long' }, { value: 'SHORT', label: 'Short' },
+                    ], 'LONG'),
+                    toolsCalculatorInput('tools-position-max', 'Max exposure (%)', { value: 100, min: 0, step: '0.01' }),
+                ].join('');
+            } else if (activeToolsCalculator === 'move') {
+                buttonText = 'Calculate expected move';
+                fields = [
+                    toolsCalculatorInput('tools-move-price', 'Underlying price ($)', { value: marketPrice, min: 0, step: '0.01', placeholder: 'Current price' }),
+                    toolsCalculatorInput('tools-move-iv', 'Implied volatility (%)', { value: 30, min: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-move-days', 'Days to expiry', { value: 30, min: 0, step: '1' }),
+                    toolsCalculatorInput('tools-move-days-year', 'Days per year', { value: 365, min: 1, step: '1' }),
+                ].join('');
+            } else if (activeToolsCalculator === 'probability') {
+                buttonText = 'Calculate probability';
+                fields = [
+                    toolsCalculatorInput('tools-probability-spot', 'Spot price ($)', { value: marketPrice, min: 0, step: '0.01', placeholder: 'Current price' }),
+                    toolsCalculatorInput('tools-probability-target', 'Target price ($)', { min: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-probability-iv', 'Implied volatility (%)', { value: 30, min: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-probability-days', 'Days to target', { value: 30, min: 0, step: '1' }),
+                    toolsCalculatorInput('tools-probability-rate', 'Risk-free rate (%)', { value: 4.5, step: '0.01' }),
+                    toolsCalculatorInput('tools-probability-dividend', 'Dividend yield (%)', { value: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-probability-days-year', 'Days per year', { value: 365, min: 1, step: '1' }),
+                ].join('');
+            } else if (activeToolsCalculator === 'growth') {
+                const isDca = toolsGrowthMode === 'dca';
+                buttonText = isDca ? 'Project DCA plan' : 'Project compound growth';
+                const rateLabel = isDca ? 'Annual return (%)' : 'Annual rate (%)';
+                const frequencyLabel = isDca ? 'Contributions per year' : 'Compounds per year';
+                fields = [
+                    toolsCalculatorSelect('tools-growth-mode', 'Projection type', [
+                        { value: 'compound', label: 'Compound growth' },
+                        { value: 'dca', label: 'DCA projection' },
+                    ], toolsGrowthMode),
+                    toolsCalculatorInput('tools-growth-initial', 'Initial investment ($)', { value: 1000, min: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-growth-contribution', 'Periodic contribution ($)', { value: 100, min: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-growth-rate', rateLabel, { value: 8, step: '0.01' }),
+                    toolsCalculatorInput('tools-growth-years', 'Years', { value: 10, min: 0, step: '0.5' }),
+                    toolsCalculatorInput('tools-growth-frequency', frequencyLabel, { value: 12, min: 1, step: '1' }),
+                    toolsCalculatorSelect('tools-growth-timing', 'Contribution timing', [
+                        { value: 'end', label: 'End of each period' },
+                        { value: 'begin', label: 'Beginning of each period' },
+                    ], 'end'),
+                ].join('');
+                window.setTimeout(() => {
+                    const mode = document.getElementById('tools-growth-mode');
+                    if (mode) mode.addEventListener('change', event => setGrowthCalculatorMode(event.target.value), { once: true });
+                }, 0);
+            } else if (activeToolsCalculator === 'fair') {
+                buttonText = 'Calculate fair value';
+                fields = [
+                    toolsCalculatorInput('tools-fair-fcf', 'Free cash flow / share ($)', { value: 5, min: 0, step: '0.01' }),
+                    toolsCalculatorInput('tools-fair-growth', 'Growth rate (%)', { value: 6, step: '0.01' }),
+                    toolsCalculatorInput('tools-fair-discount', 'Discount rate (%)', { value: 10, step: '0.01' }),
+                    toolsCalculatorInput('tools-fair-terminal', 'Terminal growth (%)', { value: 2.5, step: '0.01' }),
+                    toolsCalculatorInput('tools-fair-years', 'Projection years', { value: 5, min: 1, step: '1' }),
+                    toolsCalculatorInput('tools-fair-price', 'Current price ($, optional)', { value: marketPrice, min: 0, step: '0.01', placeholder: 'Optional' }),
+                    toolsCalculatorInput('tools-fair-safety', 'Margin of safety (%)', { value: 20, min: 0, step: '0.01' }),
+                ].join('');
+            }
+
+            host.innerHTML = fields;
+            submit.textContent = buttonText;
+        }
+
+        function selectToolsCalculator(calculator, source) {
+            if (!['position', 'move', 'probability', 'growth', 'fair'].includes(calculator)) return;
+            activeToolsCalculator = calculator;
+            toolsCalculatorRequestVersion += 1;
+            if (toolsCalculatorAbortController && !toolsCalculatorAbortController.signal.aborted) {
+                toolsCalculatorAbortController.abort();
+            }
+            toolsCalculatorAbortController = null;
+            document.querySelectorAll('.pt-tools-tab').forEach(tab => {
+                const active = tab.dataset.calculator === calculator;
+                tab.classList.toggle('is-active', active);
+                tab.setAttribute('aria-selected', String(active));
+            });
+            if (source) source.focus({ preventScroll: true });
+            hideToolsCalculatorResult();
+            renderToolsCalculatorFields();
+        }
+
+        function setGrowthCalculatorMode(mode) {
+            toolsGrowthMode = mode === 'dca' ? 'dca' : 'compound';
+            hideToolsCalculatorResult();
+            renderToolsCalculatorFields();
+        }
+
+        function toolsCalculatorNumber(id, label, options = {}) {
+            const input = document.getElementById(id);
+            const raw = input ? input.value.trim() : '';
+            if (!raw && options.optional) return undefined;
+            if (!raw) throw new Error(`${label} is required.`);
+            const value = Number(raw);
+            if (!Number.isFinite(value)) throw new Error(`${label} must be a valid number.`);
+            if (options.integer && !Number.isInteger(value)) throw new Error(`${label} must be a whole number.`);
+            return value;
+        }
+
+        function toolsCalculatorPayload() {
+            if (activeToolsCalculator === 'position') {
+                return {
+                    endpoint: '/api/tools/position-size',
+                    payload: {
+                        account_value: toolsCalculatorNumber('tools-position-account', 'Account value'),
+                        risk_percent: toolsCalculatorNumber('tools-position-risk', 'Risk per trade'),
+                        entry_price: toolsCalculatorNumber('tools-position-entry', 'Entry price'),
+                        stop_price: toolsCalculatorNumber('tools-position-stop', 'Stop price'),
+                        side: document.getElementById('tools-position-side').value,
+                        max_position_percent: toolsCalculatorNumber('tools-position-max', 'Maximum exposure'),
+                    },
+                };
+            }
+            if (activeToolsCalculator === 'move') {
+                return {
+                    endpoint: '/api/tools/expected-move',
+                    payload: {
+                        price: toolsCalculatorNumber('tools-move-price', 'Underlying price'),
+                        implied_volatility_percent: toolsCalculatorNumber('tools-move-iv', 'Implied volatility'),
+                        days: toolsCalculatorNumber('tools-move-days', 'Days to expiry'),
+                        days_per_year: toolsCalculatorNumber('tools-move-days-year', 'Days per year'),
+                    },
+                };
+            }
+            if (activeToolsCalculator === 'probability') {
+                return {
+                    endpoint: '/api/tools/probability',
+                    payload: {
+                        spot_price: toolsCalculatorNumber('tools-probability-spot', 'Spot price'),
+                        target_price: toolsCalculatorNumber('tools-probability-target', 'Target price'),
+                        implied_volatility_percent: toolsCalculatorNumber('tools-probability-iv', 'Implied volatility'),
+                        days: toolsCalculatorNumber('tools-probability-days', 'Days to target'),
+                        risk_free_rate_percent: toolsCalculatorNumber('tools-probability-rate', 'Risk-free rate'),
+                        dividend_yield_percent: toolsCalculatorNumber('tools-probability-dividend', 'Dividend yield'),
+                        days_per_year: toolsCalculatorNumber('tools-probability-days-year', 'Days per year'),
+                    },
+                };
+            }
+            if (activeToolsCalculator === 'growth') {
+                const mode = document.getElementById('tools-growth-mode').value === 'dca' ? 'dca' : 'compound';
+                const initial = toolsCalculatorNumber('tools-growth-initial', 'Initial investment');
+                const contribution = toolsCalculatorNumber('tools-growth-contribution', 'Periodic contribution');
+                const rate = toolsCalculatorNumber('tools-growth-rate', 'Annual rate');
+                const years = toolsCalculatorNumber('tools-growth-years', 'Years');
+                const frequency = toolsCalculatorNumber('tools-growth-frequency', 'Compounds per year', { integer: true });
+                const timing = document.getElementById('tools-growth-timing').value;
+                return mode === 'dca'
+                    ? {
+                        endpoint: '/api/tools/dca',
+                        payload: {
+                            initial_investment: initial,
+                            periodic_contribution: contribution,
+                            annual_return_percent: rate,
+                            years,
+                            contributions_per_year: frequency,
+                            contribution_timing: timing,
+                        },
+                    }
+                    : {
+                        endpoint: '/api/tools/compound',
+                        payload: {
+                            initial_investment: initial,
+                            annual_rate_percent: rate,
+                            years,
+                            periodic_contribution: contribution,
+                            compounds_per_year: frequency,
+                            contribution_timing: timing,
+                        },
+                    };
+            }
+
+            const currentPrice = toolsCalculatorNumber('tools-fair-price', 'Current price', { optional: true });
+            const payload = {
+                free_cash_flow_per_share: toolsCalculatorNumber('tools-fair-fcf', 'Free cash flow per share'),
+                growth_rate_percent: toolsCalculatorNumber('tools-fair-growth', 'Growth rate'),
+                discount_rate_percent: toolsCalculatorNumber('tools-fair-discount', 'Discount rate'),
+                terminal_growth_rate_percent: toolsCalculatorNumber('tools-fair-terminal', 'Terminal growth'),
+                projection_years: toolsCalculatorNumber('tools-fair-years', 'Projection years', { integer: true }),
+                margin_of_safety_percent: toolsCalculatorNumber('tools-fair-safety', 'Margin of safety'),
+            };
+            if (currentPrice !== undefined) payload.current_price = currentPrice;
+            return { endpoint: '/api/tools/fair-value', payload };
+        }
+
+        function toolsCalculatorDisplayNumber(value, digits = 2) {
+            const number = Number(value);
+            return Number.isFinite(number) ? number.toLocaleString('en-US', {
+                minimumFractionDigits: 0,
+                maximumFractionDigits: digits,
+            }) : '—';
+        }
+
+        function toolsCalculatorDisplayMoney(value) {
+            const number = Number(value);
+            return Number.isFinite(number) ? `$${number.toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+            })}` : '—';
+        }
+
+        function toolsCalculatorDisplayPercent(value, signed = false) {
+            const number = Number(value);
+            if (!Number.isFinite(number)) return '—';
+            return `${signed && number >= 0 ? '+' : ''}${toolsCalculatorDisplayNumber(number, 2)}%`;
+        }
+
+        function hideToolsCalculatorResult() {
+            const host = document.getElementById('tools-calculator-result');
+            if (!host) return;
+            host.hidden = true;
+            host.classList.remove('is-error');
+            host.replaceChildren();
+        }
+
+        function showToolsCalculatorMessage(title, message, isError = false) {
+            const host = document.getElementById('tools-calculator-result');
+            if (!host) return;
+            host.hidden = false;
+            host.classList.toggle('is-error', isError);
+            host.replaceChildren();
+            const heading = document.createElement('p');
+            heading.className = isError ? 'pt-tools-result-error' : 'pt-tools-result-title';
+            heading.textContent = title;
+            const copy = document.createElement('p');
+            copy.className = isError ? 'pt-tools-result-error' : 'pt-tools-result-summary';
+            copy.textContent = message;
+            host.append(heading, copy);
+        }
+
+        function showToolsCalculatorResult(title, summary, metrics, note = '') {
+            const host = document.getElementById('tools-calculator-result');
+            if (!host) return;
+            host.hidden = false;
+            host.classList.remove('is-error');
+            host.replaceChildren();
+
+            const heading = document.createElement('p');
+            heading.className = 'pt-tools-result-title';
+            heading.textContent = title;
+            const copy = document.createElement('p');
+            copy.className = 'pt-tools-result-summary';
+            copy.textContent = summary;
+            const grid = document.createElement('div');
+            grid.className = 'pt-tools-result-grid';
+            metrics.forEach(metric => {
+                const card = document.createElement('div');
+                card.className = `pt-tools-result-metric${metric.tone ? ` ${metric.tone}` : ''}`;
+                const label = document.createElement('span');
+                label.textContent = metric.label;
+                const value = document.createElement('strong');
+                value.textContent = metric.value;
+                card.append(label, value);
+                grid.appendChild(card);
+            });
+            host.append(heading, copy, grid);
+            if (note) {
+                const noteEl = document.createElement('p');
+                noteEl.className = 'pt-tools-result-summary';
+                noteEl.textContent = note;
+                host.appendChild(noteEl);
+            }
+        }
+
+        function toolsCalculatorErrorMessage(data, fallback) {
+            if (!data) return fallback;
+            if (typeof data.detail === 'string') return data.detail;
+            if (typeof data.message === 'string') return data.message;
+            if (Array.isArray(data.detail)) {
+                const details = data.detail.map(item => item && (item.msg || item.message)).filter(Boolean);
+                if (details.length) return details.join(' ');
+            }
+            return fallback;
+        }
+
+        function renderToolsCalculatorResponse(data, calculator) {
+            if (calculator === 'position') {
+                const capped = Boolean(data.is_capped_by_max_position);
+                showToolsCalculatorResult(
+                    'Position sizing result',
+                    capped ? 'The risk-based quantity was capped by your maximum exposure setting.' : 'Quantity is sized from the stop-loss risk budget you supplied.',
+                    [
+                        { label: 'Recommended units', value: toolsCalculatorDisplayNumber(data.recommended_quantity, 0) },
+                        { label: 'Position value', value: toolsCalculatorDisplayMoney(data.position_value) },
+                        { label: 'Max loss at stop', value: toolsCalculatorDisplayMoney(data.max_loss_at_stop), tone: 'negative' },
+                        { label: 'Risk budget used', value: toolsCalculatorDisplayPercent(data.risk_budget_used_percent) },
+                    ],
+                    `Risk per unit: ${toolsCalculatorDisplayMoney(data.risk_per_unit)} · Exposure cap: ${toolsCalculatorDisplayMoney(data.maximum_position_value)}`
+                );
+                return;
+            }
+            if (calculator === 'move') {
+                showToolsCalculatorResult(
+                    'One-standard-deviation expected move',
+                    'Range is derived from the IV and time horizon supplied; it is not a prediction of direction.',
+                    [
+                        { label: 'Expected move', value: toolsCalculatorDisplayMoney(data.expected_move) },
+                        { label: 'Expected move', value: toolsCalculatorDisplayPercent(data.expected_move_percent) },
+                        { label: 'Lower bound', value: toolsCalculatorDisplayMoney(data.lower_bound), tone: 'negative' },
+                        { label: 'Upper bound', value: toolsCalculatorDisplayMoney(data.upper_bound), tone: 'positive' },
+                    ]
+                );
+                return;
+            }
+            if (calculator === 'probability') {
+                showToolsCalculatorResult(
+                    'Risk-neutral probability',
+                    'This is a lognormal model assumption, not a directional price forecast.',
+                    [
+                        { label: 'Above target', value: toolsCalculatorDisplayPercent(data.probability_above_percent), tone: 'positive' },
+                        { label: 'Below / at target', value: toolsCalculatorDisplayPercent(data.probability_below_or_equal_percent), tone: 'negative' },
+                        { label: 'Forward price', value: toolsCalculatorDisplayMoney(data.forward_price) },
+                        { label: 'Model', value: String(data.model || '—').replace(/_/g, ' ') },
+                    ],
+                    data.assumption || ''
+                );
+                return;
+            }
+            if (calculator === 'growth') {
+                const isDca = toolsGrowthMode === 'dca';
+                const schedule = Array.isArray(data.schedule) && data.schedule.length ? data.schedule[data.schedule.length - 1] : null;
+                showToolsCalculatorResult(
+                    isDca ? 'DCA projection' : 'Compound growth projection',
+                    'Projection uses the return, contribution cadence, and timing you supplied.',
+                    [
+                        { label: 'Future value', value: toolsCalculatorDisplayMoney(data.future_value), tone: 'positive' },
+                        { label: 'Total invested', value: toolsCalculatorDisplayMoney(data.total_invested) },
+                        { label: 'Investment gain', value: toolsCalculatorDisplayMoney(data.investment_gain), tone: Number(data.investment_gain) >= 0 ? 'positive' : 'negative' },
+                        { label: isDca ? 'Periods' : 'Effective annual rate', value: isDca ? toolsCalculatorDisplayNumber(data.periods, 0) : toolsCalculatorDisplayPercent(data.effective_annual_rate_percent) },
+                    ],
+                    schedule ? `Latest schedule point: year ${toolsCalculatorDisplayNumber(schedule.year, 2)} · ${toolsCalculatorDisplayMoney(schedule.portfolio_value)}` : ''
+                );
+                return;
+            }
+
+            const upside = Number(data.upside_downside_percent);
+            showToolsCalculatorResult(
+                'DCF fair value',
+                'Two-stage DCF based only on the cash-flow and rate assumptions you supplied.',
+                [
+                    { label: 'Fair value / share', value: toolsCalculatorDisplayMoney(data.fair_value_per_share), tone: 'positive' },
+                    { label: 'After safety margin', value: toolsCalculatorDisplayMoney(data.value_after_margin_of_safety) },
+                    { label: 'Current price', value: toolsCalculatorDisplayMoney(data.current_price) },
+                    { label: 'Upside / downside', value: toolsCalculatorDisplayPercent(data.upside_downside_percent, true), tone: Number.isFinite(upside) ? (upside >= 0 ? 'positive' : 'negative') : '' },
+                ],
+                `Terminal present value: ${toolsCalculatorDisplayMoney(data.terminal_present_value)}`
+            );
+        }
+
+        async function runToolsCalculator(event) {
+            event.preventDefault();
+            const requestVersion = ++toolsCalculatorRequestVersion;
+            const calculator = activeToolsCalculator;
+            let request;
+            try {
+                request = toolsCalculatorPayload();
+            } catch (error) {
+                showToolsCalculatorMessage('Check calculator inputs', error.message || 'Enter valid values and try again.', true);
+                return;
+            }
+
+            if (toolsCalculatorAbortController && !toolsCalculatorAbortController.signal.aborted) {
+                toolsCalculatorAbortController.abort();
+            }
+            const controller = new AbortController();
+            toolsCalculatorAbortController = controller;
+            const submit = document.getElementById('tools-calculator-submit');
+            if (submit) submit.disabled = true;
+            showToolsCalculatorMessage('Calculating', 'Validating assumptions with the calculator service…');
+
+            try {
+                const response = await fetch(request.endpoint, {
+                    method: 'POST',
+                    headers: authHeaders(true),
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    signal: controller.signal,
+                    body: JSON.stringify(request.payload),
+                });
+                const data = await response.json().catch(() => null);
+                if (!response.ok) {
+                    throw new Error(toolsCalculatorErrorMessage(data, `Calculator request failed (${response.status}).`));
+                }
+                if (requestVersion !== toolsCalculatorRequestVersion || calculator !== activeToolsCalculator) return;
+                renderToolsCalculatorResponse(data || {}, calculator);
+            } catch (error) {
+                if (error && error.name === 'AbortError') return;
+                if (requestVersion !== toolsCalculatorRequestVersion || calculator !== activeToolsCalculator) return;
+                showToolsCalculatorMessage('Calculator unavailable', error.message || 'Unable to calculate right now. Please try again.', true);
+            } finally {
+                if (toolsCalculatorAbortController === controller) toolsCalculatorAbortController = null;
+                if (requestVersion === toolsCalculatorRequestVersion && submit) submit.disabled = false;
+            }
+        }
+
         async function runSimulator() {
             const payload = {
                 strike_price: parseFloat(document.getElementById('sim-strike').value),
@@ -959,79 +3666,7 @@ ${t}
             return "var(--red)";
         }
 
-        function escapeHtml(value) {
-            return String(value ?? '').replace(/[&<>'"]/g, char => ({
-                '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
-            }[char]));
-        }
-
-        async function loadTerminalScore(ticker) {
-            const ring = document.getElementById('terminal-score-ring');
-            const valueEl = document.getElementById('terminal-score-value');
-            const stanceEl = document.getElementById('terminal-score-stance');
-            const subtitleEl = document.getElementById('terminal-score-subtitle');
-            const componentsEl = document.getElementById('terminal-score-components');
-            const noteEl = document.getElementById('terminal-score-note');
-            const modelEl = document.getElementById('terminal-score-model');
-
-            try {
-                const res = await fetch(`/api/terminal-score?ticker=${encodeURIComponent(ticker)}`);
-                if (!res.ok) {
-                    const detail = await res.text();
-                    throw new Error(`Terminal score request failed: ${res.status} - ${detail.slice(0, 180)}`);
-                }
-                const data = await res.json();
-                const score = Math.max(0, Math.min(100, Number(data.score)));
-                if (!Number.isFinite(score)) throw new Error('Terminal score response was invalid');
-
-                const color = gaugeColor(score);
-                ring.style.setProperty('--score-progress', `${score}%`);
-                ring.style.setProperty('--score-color', color);
-                valueEl.textContent = Math.round(score);
-                stanceEl.textContent = data.stance || 'NEUTRAL';
-                stanceEl.style.color = color;
-                subtitleEl.textContent = `${data.ticker || ticker} · ${data.model_timeframe || '1d'} multi-factor model`;
-                modelEl.textContent = `${String(data.model_timeframe || '1d').toUpperCase()} · ${Array.isArray(data.components) ? data.components.length : 0} inputs`;
-
-                const bullishProbability = Number(data.bullish_probability);
-                document.getElementById('terminal-score-bias').textContent = Number.isFinite(bullishProbability)
-                    ? `${bullishProbability.toFixed(0)}%`
-                    : `${Math.round(Number(data.bullish_bias) || score)}/100`;
-                document.getElementById('terminal-score-confidence').textContent = `${Math.round(Number(data.confidence) || 0)}%`;
-                document.getElementById('terminal-score-risk').textContent = data.risk || '—';
-
-                const components = Array.isArray(data.components) ? data.components : [];
-                componentsEl.innerHTML = components.map(component => {
-                    const componentScore = Math.max(0, Math.min(100, Number(component.score) || 0));
-                    const componentColor = gaugeColor(componentScore);
-                    const tooltip = escapeHtml(component.reason || '');
-                    return `<div class="terminal-score-component" title="${tooltip}">
-                        <span class="terminal-score-component-label">${escapeHtml(component.label || component.key)}</span>
-                        <span class="terminal-score-component-score">${Math.round(componentScore)}</span>
-                        <span class="terminal-score-component-bar"><span class="terminal-score-component-fill" style="width:${componentScore}%; background:${componentColor};"></span></span>
-                    </div>`;
-                }).join('');
-
-                if (!componentsEl.innerHTML.trim()) {
-                    componentsEl.innerHTML = '<span style="font-size:11px; color:var(--text-muted);">No score components available.</span>';
-                }
-                const limitation = Array.isArray(data.limitations) ? data.limitations[0] : null;
-                noteEl.textContent = limitation || 'Rule-based decision support — not investment advice.';
-            } catch (err) {
-                console.error('Terminal score fetch error:', err);
-                ring.style.setProperty('--score-progress', '0%');
-                ring.style.setProperty('--score-color', 'var(--red)');
-                valueEl.textContent = '—';
-                stanceEl.textContent = 'UNAVAILABLE';
-                stanceEl.style.color = 'var(--red)';
-                subtitleEl.textContent = 'The score will reload when market data is available.';
-                modelEl.textContent = 'Daily model';
-                componentsEl.innerHTML = '';
-                noteEl.textContent = 'Rule-based decision support — not investment advice.';
-            }
-        }
-
-        async function loadFullGauges(ticker) {
+        async function loadFullGaugesLegacy(ticker) {
             const grid = document.getElementById('full-gauges-grid');
             try {
                 const res = await fetch(`/api/gauges?ticker=${ticker}`);
@@ -1063,6 +3698,61 @@ ${t}
             } catch (err) {
                 console.error("Gauges fetch error:", err);
                 grid.innerHTML = `<div style="font-size:12px; color:var(--red);">โหลดเกจไม่สำเร็จ</div>`;
+            }
+        }
+
+        async function loadFullGauges(context) {
+            if (!isCurrentView(context)) return;
+            if (gaugesAbortController && !gaugesAbortController.signal.aborted) {
+                gaugesAbortController.abort();
+            }
+            const controller = new AbortController();
+            gaugesAbortController = controller;
+            const gaugeContext = { ...context, signal: controller.signal };
+            const grid = document.getElementById('full-gauges-grid');
+            const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[char]));
+
+            try {
+                const res = await authFetch(`/api/gauges?ticker=${encodeURIComponent(gaugeContext.ticker)}`, {
+                    signal: gaugeContext.signal,
+                    cache: 'no-store',
+                });
+                if (!isCurrentView(gaugeContext)) return;
+                if (!res.ok) throw new Error(`Gauges request failed: ${res.status}`);
+                const data = await res.json();
+                if (!isCurrentView(gaugeContext)) return;
+                const gauges = data.gauges || {};
+                const conf = gauges.confidence_score;
+                document.getElementById('gauges-confidence-badge').innerText =
+                    conf && conf.score !== null ? `${conf.score}% data-backed` : '-';
+
+                grid.innerHTML = Object.entries(GAUGE_LABELS).map(([key, label]) => {
+                    const gauge = gauges[key];
+                    if (!gauge || gauge.score === null || gauge.score === undefined) return '';
+                    const score = Number(gauge.score);
+                    if (!Number.isFinite(score)) return '';
+                    const display = Number.isInteger(score) ? score : score.toFixed(1);
+                    const color = gaugeColor(score);
+                    const reasons = escapeHtml((gauge.reasons || []).join(' | '));
+                    return `<div class="mini-gauge" title="${reasons}">
+                        <div class="mg-label">${escapeHtml(label)}</div>
+                        <div class="mg-score" style="color:${color};">${display}</div>
+                        <div class="mg-tag" style="background:${color}22; color:${color};">${escapeHtml(gauge.label)}</div>
+                    </div>`;
+                }).join('');
+
+                if (!grid.innerHTML.trim()) {
+                    grid.innerHTML = '<div style="grid-column: 1 / -1; font-size:12px; color:var(--text-muted);">No gauge data is available for this symbol.</div>';
+                }
+            } catch (err) {
+                if (!isAbortError(err) && isCurrentView(gaugeContext)) {
+                    console.error('Gauges fetch error:', err);
+                    grid.innerHTML = '<div style="font-size:12px; color:var(--red);">Unable to load gauges.</div>';
+                }
+            } finally {
+                if (gaugesAbortController === controller) gaugesAbortController = null;
             }
         }
 
@@ -1301,7 +3991,11 @@ ${t}
 
         async function bootTerminal() {
             renderIndicatorsPanel();
+            renderToolsCalculatorFields();
+            void loadCategoryRail();
             addScenarioCard();
+            await consumeAuthHash();
+            await loadAuthSession();
             await fetchWatchlist();
             await fetchDashboardData();
             startChartAutoRefresh();

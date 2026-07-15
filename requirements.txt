@@ -1,6 +1,9 @@
 fastapi>=0.115.0
 uvicorn[standard]>=0.30.6
 pydantic>=2.9.2
+SQLAlchemy>=2.0.36,<2.1
+alembic>=1.14.0,<1.15
+psycopg[binary]>=3.2.3,<3.3
 requests>=2.32.3
 yfinance==0.2.66
 pandas>=2.2.3
