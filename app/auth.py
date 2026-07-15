@@ -141,7 +141,9 @@ def get_auth_settings() -> AuthSettings:
         supabase_url=raw_url or None,
         anon_key=anon_key or None,
         public_app_url=public_app_url,
-        google_enabled=_read_bool(os.getenv("SUPABASE_GOOGLE_ENABLED"), default=True),
+        # Do not advertise Google sign-in until the provider is explicitly
+        # enabled in both Supabase and this deployment's environment.
+        google_enabled=_read_bool(os.getenv("SUPABASE_GOOGLE_ENABLED"), default=False),
         secure_cookies=_read_bool(os.getenv("AUTH_COOKIE_SECURE"), default=default_secure),
         timeout_seconds=_read_positive_int("SUPABASE_REQUEST_TIMEOUT_SECONDS", 10),
         oauth_state_secret=oauth_state_secret,
@@ -624,13 +626,19 @@ def require_current_user(request: Request, response: Response) -> CurrentUser:
 
 
 def password_sign_up(
-    settings: AuthSettings, *, email: str, password: str, redirect_to: str
+    settings: AuthSettings, *, email: str, password: str, redirect_to: str,
+    full_name: str | None = None,
 ) -> dict[str, Any]:
+    options: dict[str, Any] = {"emailRedirectTo": redirect_to}
+    if full_name:
+        # Supabase owns identity records, so profile fields belong in the
+        # provider's user metadata rather than in a duplicate password table.
+        options["data"] = {"full_name": full_name}
     return _provider_request(
         settings,
         "POST",
         "/auth/v1/signup",
-        json_body={"email": email, "password": password, "options": {"emailRedirectTo": redirect_to}},
+        json_body={"email": email, "password": password, "options": options},
     )
 
 
@@ -663,6 +671,16 @@ def send_password_recovery(settings: AuthSettings, *, email: str, redirect_to: s
         "POST",
         "/auth/v1/recover",
         json_body={"email": email, "redirect_to": redirect_to},
+    )
+
+
+def resend_signup_confirmation(settings: AuthSettings, *, email: str, redirect_to: str) -> dict[str, Any]:
+    """Ask Supabase to resend a confirmation message without leaking account existence."""
+    return _provider_request(
+        settings,
+        "POST",
+        "/auth/v1/resend",
+        json_body={"type": "signup", "email": email, "options": {"emailRedirectTo": redirect_to}},
     )
 
 

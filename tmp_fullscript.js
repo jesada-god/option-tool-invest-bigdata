@@ -1754,6 +1754,7 @@
             const isSignUp = authFormMode === 'sign-up';
             host.innerHTML = `
                 <form class="pt-auth-stack" onsubmit="submitAuth(event)">
+                    ${isSignUp ? '<input id="auth-full-name" type="text" maxlength="120" autocomplete="name" placeholder="Full name (optional)">' : ''}
                     <input id="auth-email" type="email" autocomplete="email" placeholder="Email" required>
                     <input id="auth-password" type="password" minlength="8" autocomplete="${isSignUp ? 'new-password' : 'current-password'}" placeholder="Password" required>
                     ${isSignUp ? '<input id="auth-confirm-password" type="password" minlength="8" autocomplete="new-password" placeholder="Confirm password" required>' : ''}
@@ -1762,6 +1763,7 @@
                     ${authState.googleEnabled ? '<button type="button" class="pt-auth-action secondary" onclick="signInWithGoogle()">Continue with Google</button>' : ''}
                     <div class="pt-auth-links">
                         <button type="button" onclick="setAuthFormMode('${isSignUp ? 'sign-in' : 'sign-up'}')">${isSignUp ? 'Already have an account?' : 'Create account'}</button>
+                        ${isSignUp ? '<button type="button" onclick="sendVerificationEmail()">Resend confirmation</button>' : ''}
                         ${isSignUp ? '' : '<button type="button" onclick="sendPasswordReset()">Forgot password?</button>'}
                     </div>
                     <div id="profile-auth-status" class="pt-auth-status"></div>
@@ -1829,6 +1831,7 @@
             event.preventDefault();
             const email = document.getElementById('auth-email').value.trim();
             const password = document.getElementById('auth-password').value;
+            const fullName = document.getElementById('auth-full-name')?.value.trim();
             const confirmation = document.getElementById('auth-confirm-password')?.value;
             const remember = Boolean(document.getElementById('auth-remember')?.checked);
             if (authFormMode === 'sign-up' && password !== confirmation) {
@@ -1842,7 +1845,7 @@
                     method: 'POST',
                     headers: authHeaders(true),
                     credentials: 'same-origin',
-                    body: JSON.stringify({ email, password, remember_me: remember }),
+                    body: JSON.stringify({ email, password, full_name: fullName || null, remember_me: remember }),
                 });
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) throw new Error(data.detail || data.message || 'Unable to complete authentication.');
@@ -1877,6 +1880,25 @@
                 setAuthStatus(data.message || 'If this address exists, a reset link is on its way.', 'success');
             } catch (err) {
                 setAuthStatus(err.message || 'Unable to send reset email.', 'error');
+            }
+        }
+
+        async function sendVerificationEmail() {
+            const email = document.getElementById('auth-email')?.value.trim();
+            if (!email) {
+                setAuthStatus('Enter your email first, then request a confirmation link.', 'error');
+                return;
+            }
+            setAuthStatus('Sending confirmation email…');
+            try {
+                const res = await authFetch('/api/auth/verify-email', {
+                    method: 'POST', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ email })
+                });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || data.message || 'Unable to send confirmation email.');
+                setAuthStatus(data.message || 'If this address needs confirmation, a new link is on its way.', 'success');
+            } catch (err) {
+                setAuthStatus(err.message || 'Unable to send confirmation email.', 'error');
             }
         }
 

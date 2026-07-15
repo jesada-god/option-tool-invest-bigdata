@@ -111,6 +111,53 @@ missing, rather than falling back to an unsafe browser-token flow.
 4. Add the `SUPABASE_URL`, `SUPABASE_ANON_KEY`, `PUBLIC_APP_URL`, and a unique
    `AUTH_STATE_SECRET` to Render.  Restart after changing them.
 
+### Authentication API and Google configuration
+
+Supabase owns password hashes, email confirmation, Google identities, token
+rotation, and revocation. Quantora's PostgreSQL `profiles` table uses the same
+Supabase UUID and owns only application data (preferences, portfolios,
+watchlists, history, and alerts); it deliberately does not duplicate a password
+or refresh-token table.
+
+Before enabling Google, create an OAuth Web client in Google Cloud Console and
+register this exact redirect URI:
+
+```text
+https://YOUR_SERVICE.onrender.com/api/auth/google/callback
+```
+
+Put the Google client ID and secret in **Supabase Auth > Providers > Google**,
+not in this repository or Render. Then set `SUPABASE_GOOGLE_ENABLED=true` in
+Render and add the same callback URL to Supabase's allowed redirect URLs.
+
+The application exposes these same-origin endpoints. The documented aliases
+and the existing UI routes are both supported.
+
+| Purpose | Endpoint |
+| --- | --- |
+| Register | `POST /api/auth/register` or `/api/auth/sign-up` |
+| Sign in | `POST /api/auth/login` or `/api/auth/sign-in` |
+| Current session | `GET /api/auth/me` or `/api/me` |
+| Refresh HttpOnly session | `POST /api/auth/refresh` |
+| Sign out | `POST /api/auth/logout` or `/api/auth/sign-out` |
+| Send/resent email confirmation | `POST /api/auth/verify-email` |
+| Forgot password | `POST /api/auth/forgot-password` |
+| Complete recovery password change | `POST /api/auth/reset-password` or `/api/auth/update-password` |
+| Start Google sign-in | `GET /api/auth/google` or `/api/auth/google/start` |
+
+Example registration (use your own same-origin browser client in production so
+the origin and CSRF protections remain active):
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://localhost:8000/api/auth/register `
+  -ContentType 'application/json' `
+  -Body '{"email":"trader@example.com","password":"a-strong-password","full_name":"Quantora Trader","remember_me":true}'
+```
+
+For a cookie-authenticated refresh, send the same-origin `X-CSRF-Token` header
+that the application received with its CSRF cookie. Tokens are never returned
+to or stored by browser JavaScript.
+
 ## Deploy from GitHub to Render
 
 1. Commit and push the project to a GitHub repository.

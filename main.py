@@ -88,11 +88,14 @@ from rate_limit import SlidingWindowRateLimiter
 from app.auth import (
     ACCESS_COOKIE,
     CSRF_COOKIE,
+    REFRESH_COOKIE,
+    REMEMBER_COOKIE,
     AuthProviderError,
     CurrentUser,
     begin_google_oauth,
     clear_google_oauth_transaction,
     clear_session_cookies,
+    coordinated_refresh_session,
     consume_google_oauth,
     create_google_callback_url,
     create_redirect_url,
@@ -102,6 +105,7 @@ from app.auth import (
     get_user_from_access_token,
     password_sign_in,
     password_sign_up,
+    resend_signup_confirmation,
     send_password_recovery,
     set_session_cookies,
     sign_out_from_provider,
@@ -186,9 +190,14 @@ auth_rate_limiter = SlidingWindowRateLimiter()
 compute_rate_limiter = SlidingWindowRateLimiter()
 quote_rate_limiter = SlidingWindowRateLimiter()
 AUTH_RATE_LIMIT_PATHS = {
+    "/api/auth/register",
     "/api/auth/sign-up",
+    "/api/auth/login",
     "/api/auth/sign-in",
+    "/api/auth/verify-email",
     "/api/auth/forgot-password",
+    "/api/auth/reset-password",
+    "/api/auth/refresh",
     "/api/auth/session",
     "/api/auth/update-password",
     "/api/auth/google/start",
@@ -429,6 +438,7 @@ class AuthCredentialsModel(BaseModel):
 
     email: str = Field(min_length=3, max_length=320)
     password: str = Field(min_length=8, max_length=256)
+    full_name: Optional[str] = Field(default=None, max_length=120)
     remember_me: bool = True
 
     @field_validator("email")
@@ -438,6 +448,18 @@ class AuthCredentialsModel(BaseModel):
         if "@" not in email or email.startswith("@") or email.endswith("@"):
             raise ValueError("email must be valid")
         return email
+
+    @field_validator("full_name")
+    @classmethod
+    def validate_full_name(cls, value: Optional[str]) -> Optional[str]:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            return None
+        if len(normalized) < 2:
+            raise ValueError("full_name must contain at least 2 characters")
+        return normalized
 
 
 class PasswordResetRequestModel(BaseModel):
@@ -1543,6 +1565,7 @@ def auth_config(request: Request):
     }
 
 
+@app.get("/api/auth/me", include_in_schema=False)
 @app.get("/api/me")
 def get_me(request: Request, response: Response):
     settings = get_runtime_auth_settings()
@@ -1597,6 +1620,7 @@ def get_me(request: Request, response: Response):
     }
 
 
+@app.post("/api/auth/register", include_in_schema=False)
 @app.post("/api/auth/sign-up")
 def sign_up(payload: AuthCredentialsModel, request: Request, response: Response):
     settings = get_runtime_auth_settings()
@@ -1608,6 +1632,7 @@ def sign_up(payload: AuthCredentialsModel, request: Request, response: Response)
             email=payload.email,
             password=payload.password,
             redirect_to=create_redirect_url(request, settings),
+            full_name=payload.full_name,
         )
         session = result.get("session") if isinstance(result.get("session"), dict) else None
         if session and session.get("access_token"):
@@ -1621,6 +1646,7 @@ def sign_up(payload: AuthCredentialsModel, request: Request, response: Response)
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@app.post("/api/auth/login", include_in_schema=False)
 @app.post("/api/auth/sign-in")
 def sign_in(payload: AuthCredentialsModel, request: Request, response: Response):
     settings = get_runtime_auth_settings()
@@ -1634,6 +1660,7 @@ def sign_in(payload: AuthCredentialsModel, request: Request, response: Response)
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@app.get("/api/auth/google", include_in_schema=False)
 @app.get("/api/auth/google/start")
 def start_google_sign_in(request: Request):
     settings = get_runtime_auth_settings()
@@ -1708,6 +1735,52 @@ def forgot_password(payload: PasswordResetRequestModel, request: Request):
     return {"message": "If this address exists, a password reset link is on its way."}
 
 
+@app.post("/api/auth/verify-email")
+def resend_email_verification(payload: PasswordResetRequestModel, request: Request):
+    """Resend confirmation mail without disclosing whether the address exists."""
+    settings = get_runtime_auth_settings()
+    settings.require_enabled()
+    verify_request_origin(request, settings)
+    try:
+        resend_signup_confirmation(
+            settings, email=payload.email, redirect_to=create_redirect_url(request, settings)
+        )
+    except AuthProviderError as exc:
+        if exc.status_code >= 500:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+    return {"message": "If this address needs confirmation, a new verification link is on its way."}
+
+
+@app.post("/api/auth/refresh")
+def refresh_auth_session(request: Request, response: Response):
+    """Rotate the HttpOnly refresh cookie and return session state, never tokens."""
+    settings = get_runtime_auth_settings()
+    settings.require_enabled()
+    verify_csrf(request, settings)
+    refresh_token = request.cookies.get(REFRESH_COOKIE)
+    if not refresh_token:
+        clear_session_cookies(response, settings)
+        raise HTTPException(status_code=401, detail="Sign in is required.")
+    try:
+        session = coordinated_refresh_session(refresh_token, settings)
+        remember_me = request.cookies.get(REMEMBER_COOKIE) != "0"
+        csrf_token = set_session_cookies(
+            response,
+            session,
+            settings,
+            remember_me=remember_me,
+            csrf_token=request.cookies.get(CSRF_COOKIE),
+        )
+        user = get_user_from_access_token(session["access_token"], settings)
+        response.headers["X-CSRF-Token"] = csrf_token
+        return {"authenticated": True, "csrf_token": csrf_token, "user": {"id": str(user.id), "email": user.email}}
+    except (AuthProviderError, KeyError) as exc:
+        clear_session_cookies(response, settings)
+        if isinstance(exc, AuthProviderError) and exc.status_code >= 500:
+            raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        raise HTTPException(status_code=401, detail="Your session has expired. Please sign in again.") from exc
+
+
 @app.post("/api/auth/session")
 def exchange_auth_session(payload: OAuthSessionModel, request: Request, response: Response):
     settings = get_runtime_auth_settings()
@@ -1728,6 +1801,7 @@ def exchange_auth_session(payload: OAuthSessionModel, request: Request, response
         raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
 
 
+@app.post("/api/auth/logout", include_in_schema=False)
 @app.post("/api/auth/sign-out")
 def sign_out(request: Request, response: Response):
     settings = get_runtime_auth_settings()
@@ -1744,6 +1818,7 @@ def sign_out(request: Request, response: Response):
     return {"status": "signed_out"}
 
 
+@app.post("/api/auth/reset-password", include_in_schema=False)
 @app.post("/api/auth/update-password")
 def change_password(payload: PasswordUpdateModel, request: Request, response: Response):
     settings = get_runtime_auth_settings()

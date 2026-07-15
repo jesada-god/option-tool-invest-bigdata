@@ -20,6 +20,8 @@ from app.auth import (
     coordinated_refresh_session,
     consume_google_oauth,
     get_optional_current_user,
+    password_sign_up,
+    resend_signup_confirmation,
     set_session_cookies,
     verify_request_origin,
 )
@@ -173,3 +175,27 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(first, refreshed)
         self.assertEqual(second, refreshed)
         refresh.assert_called_once_with(refresh_token, self.settings)
+
+    def test_signup_stores_optional_name_only_in_provider_metadata(self):
+        with patch("app.auth._provider_request", return_value={}) as request:
+            password_sign_up(
+                self.settings,
+                email="user@example.com",
+                password="safe-password",
+                redirect_to="https://terminal.example",
+                full_name="Quantora User",
+            )
+
+        self.assertEqual(request.call_args.kwargs["json_body"]["options"]["data"], {"full_name": "Quantora User"})
+        self.assertNotIn("password_hash", request.call_args.kwargs["json_body"])
+
+    def test_resend_confirmation_uses_generic_signup_provider_flow(self):
+        with patch("app.auth._provider_request", return_value={}) as request:
+            resend_signup_confirmation(
+                self.settings,
+                email="user@example.com",
+                redirect_to="https://terminal.example",
+            )
+
+        self.assertEqual(request.call_args.kwargs["json_body"]["type"], "signup")
+        self.assertEqual(request.call_args.kwargs["json_body"]["email"], "user@example.com")

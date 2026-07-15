@@ -28,6 +28,10 @@ services:
       # It is used to sign the short-lived server-side Google OAuth PKCE state.
       - key: AUTH_STATE_SECRET
         generateValue: true
+      # Keep the Google button hidden until its provider credentials and exact
+      # callback URL have been configured in Supabase and Google Cloud.
+      - key: SUPABASE_GOOGLE_ENABLED
+        value: "false"
       # Prompt only while the Blueprint is initially created. Values are never
       # committed and later Blueprint syncs leave the dashboard values intact.
       - key: DATABASE_URL
