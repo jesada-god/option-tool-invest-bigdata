@@ -2593,21 +2593,41 @@ def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Opti
     psych_step: ปรับระยะห่างของเลขกลมเองได้ (เช่น 100, 500, 1000, 10000) ถ้าไม่ระบุจะเลือกอัตโนมัติตามสเกลราคา
     """
     ticker = normalize_ticker(ticker)
-    current_price = get_base_price(ticker)
-    is_week = (timeframe == "week")
-    basis = "week" if is_week else timeframe
+    requested_timeframe = timeframe if timeframe in TIMEFRAME_CONFIG else "1d"
+    is_week = requested_timeframe == "week"
+    basis = "week" if is_week else requested_timeframe
 
-    hist = get_raw_history(ticker, timeframe if timeframe in TIMEFRAME_CONFIG else "1d")
+    hist = get_raw_history(ticker, requested_timeframe)
     if hist is None or hist.empty:
         hist = get_raw_history(ticker, "1d")
         basis = "1d"
+    if hist is None or hist.empty or "Close" not in hist.columns:
+        raise HTTPException(status_code=503, detail="Historical market data is temporarily unavailable for this ticker.")
 
-    atr = get_atr_for_timeframe(ticker, timeframe)
-    bar_seconds = BAR_SECONDS.get(timeframe, 86400)
+    closes = hist["Close"].dropna()
+    if closes.empty or not _is_valid_price(closes.iloc[-1]):
+        raise HTTPException(status_code=503, detail="A usable market price is temporarily unavailable for this ticker.")
+    try:
+        current_price = get_base_price(ticker)
+    except Exception as exc:
+        # Smart S/R remains useful when the live quote endpoint is briefly
+        # unavailable. The latest historical close is a real provider value,
+        # not an invented fallback price.
+        current_price = float(closes.iloc[-1])
+        logger.info("Using latest historical close for indicators %s: %s", ticker, exc)
 
-    supports_raw, resistances_raw = compute_smart_levels(
-        hist, current_price, atr, psych_step=psych_step
-    )
+    try:
+        atr = get_atr_for_timeframe(ticker, requested_timeframe)
+        supports_raw, resistances_raw = compute_smart_levels(
+            hist, current_price, atr, psych_step=psych_step
+        )
+    except Exception as exc:
+        # A malformed provider row must not turn the whole chart into a 500.
+        # Return an empty, valid S/R payload so EMA/chart controls remain
+        # available and the next cached refresh can retry the analysis.
+        logger.exception("Smart S/R computation failed for %s", ticker)
+        supports_raw, resistances_raw = [], []
+    bar_seconds = BAR_SECONDS.get(requested_timeframe, 86400)
 
     def build_level(zone: dict, kind: str, idx: int):
         price = zone["price"]

@@ -45,6 +45,7 @@
         let isNetworkOnline = navigator.onLine;
         let terminalResyncTimer = null;
         let preferenceSyncTimer = null;
+        let profileSheetReturnFocus = null;
         let userPreferences = { theme: 'dark', language: 'en', currency: 'USD', timezone: 'UTC', default_timeframe: '1d', default_indicator: 'Smart S/R' };
         const UI_TRANSLATIONS = Object.freeze({
             th: {
@@ -60,6 +61,7 @@
                 favorite: 'รายการโปรด', favorited: 'บันทึกเป็นรายการโปรดแล้ว',
                 workspace_settings: 'ตั้งค่าการใช้งาน', theme: 'ธีม', language: 'ภาษา', currency: 'สกุลเงิน', timeframe: 'ช่วงเวลาเริ่มต้น',
                 auto_save: 'บันทึกการเปลี่ยนแปลงให้โดยอัตโนมัติบนคลาวด์',
+                settings_session_only: 'การตั้งค่านี้ใช้ได้ทันทีในหน้านี้ และจะซิงก์เมื่อเปิดใช้บัญชีคลาวด์',
             },
         });
         let authFormMode = 'sign-in';
@@ -335,9 +337,12 @@
 
         function openProfileSheet() {
             const sheet = document.getElementById('profile-sheet');
+            const activeElement = document.activeElement;
+            profileSheetReturnFocus = activeElement instanceof HTMLElement && !sheet.contains(activeElement) ? activeElement : null;
             renderProfileAuthContent();
             sheet.classList.add('is-open');
             sheet.setAttribute('aria-hidden', 'false');
+            window.requestAnimationFrame(() => sheet.querySelector('[aria-label="Close profile"]')?.focus());
             if (cloudWorkspaceEnabled()) {
                 void loadCloudWorkspace();
                 void refreshAlertCenter({ quiet: true });
@@ -347,6 +352,11 @@
 
         function closeProfileSheet() {
             const sheet = document.getElementById('profile-sheet');
+            const activeElement = document.activeElement;
+            if (activeElement instanceof HTMLElement && sheet.contains(activeElement)) {
+                const fallback = document.getElementById('profile-avatar-button');
+                (profileSheetReturnFocus || fallback)?.focus();
+            }
             sheet.classList.remove('is-open');
             sheet.setAttribute('aria-hidden', 'true');
         }
@@ -1636,6 +1646,10 @@
             el.className = `pt-auth-status${tone ? ` ${tone}` : ''}`;
         }
 
+        function sessionSettingsMarkup() {
+            return `<details id="settings-details" class="pt-sync-note" style="margin:14px 0 0" open><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">${t('workspace_settings', 'Workspace settings')}</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>${t('theme', 'Theme')}</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>${t('language', 'Language')}</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>ไทย</option></select></label><label class="pt-tools-field"><span>${t('currency', 'Currency')}</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>${t('timeframe', 'Default timeframe')}</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">${cloudWorkspaceEnabled() ? t('auto_save', 'Changes save automatically to your cloud workspace.') : t('settings_session_only', 'Changes apply to this session. Sign in to sync them across devices.')}</p></details>`;
+        }
+
         function renderProfileAuthContent() {
             setProfileSummary();
             const host = document.getElementById('profile-auth-content');
@@ -1646,7 +1660,7 @@
                 return;
             }
             if (authState.configured === false) {
-                host.innerHTML = '<div class="pt-sync-note">Cloud sign-in is not configured on this deployment yet. The terminal remains in legacy local-session mode until Supabase credentials are added.</div>';
+                host.innerHTML = `<div class="pt-sync-note">Cloud sign-in is not configured on this deployment yet. Account data will be available after Supabase credentials are added.</div>${sessionSettingsMarkup()}<div id="profile-auth-status" class="pt-auth-status"></div>`;
                 return;
             }
             if (authState.recoveryMode) {
@@ -1937,7 +1951,6 @@
         }
 
         async function saveUserSettings() {
-            if (!authState.authenticated || !authState.cloudSyncEnabled) return;
             const payload = {
                 theme: document.getElementById('setting-theme')?.value || userPreferences.theme,
                 language: document.getElementById('setting-language')?.value || userPreferences.language,
@@ -1946,7 +1959,13 @@
                 timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
                 default_indicator: userPreferences.default_indicator || 'Smart S/R',
             };
+            userPreferences = { ...userPreferences, ...payload };
+            document.documentElement.dataset.theme = userPreferences.theme || 'dark';
             applyLanguage(payload.language);
+            if (!authState.authenticated || !authState.cloudSyncEnabled) {
+                setAuthStatus(t('settings_session_only', 'Changes apply to this session. Sign in to sync them across devices.'));
+                return;
+            }
             try {
                 const response = await authFetch('/api/preferences', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload) });
                 const data = await response.json().catch(() => ({}));
