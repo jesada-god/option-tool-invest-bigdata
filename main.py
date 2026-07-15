@@ -500,38 +500,41 @@ def remove_from_watchlist(ticker: str):
 
 @app.get("/api/stats")
 def get_stats(ticker: str = "NVDA"):
-    stock = yf.Ticker(ticker)
     try:
-        info = stock.info
-    except Exception:
-        info = {}
+        stock = yf.Ticker(ticker)
+        try:
+            info = stock.info
+        except Exception:
+            info = {}
 
-    bundle = get_price_bundle(ticker)
-    call_score, put_score = calculate_option_scores(ticker, info)
-    iv_rank = calculate_iv_rank(ticker)
+        bundle = get_price_bundle(ticker)
+        call_score, put_score = calculate_option_scores(ticker, info)
+        iv_rank = calculate_iv_rank(ticker)
 
-    mcap = info.get('marketCap', 0)
-    vol = info.get('volume', 0)
-    fair_value, fair_value_upside_pct = calculate_fair_value(info, bundle["current_price"])
+        mcap = info.get('marketCap', 0)
+        vol = info.get('volume', 0)
+        fair_value, fair_value_upside_pct = calculate_fair_value(info, bundle["current_price"])
 
-    return {
-        "ticker": ticker,
-        "current_price": bundle["current_price"],
-        "close_price": bundle["close_price"],
-        "prev_close": bundle["prev_close"],
-        "pre_price": bundle["pre_price"],
-        "post_price": bundle["post_price"],
-        "market_session": bundle["market_session"],
-        "pe_ratio": round(info.get('trailingPE', 0), 2) if info.get('trailingPE') else "-",
-        "market_cap": f"{mcap / 1e12:.2f}T" if mcap else "-",
-        "fair_value": fair_value,
-        "fair_value_upside_pct": fair_value_upside_pct,
-        "volume": f"{vol / 1e6:.2f}M" if vol else "-",
-        "iv_rank": iv_rank,
-        "call_score": call_score,
-        "put_score": put_score,
-        "put_call_ratio": round(put_score / max(call_score, 1), 2)
-    }
+        return {
+            "ticker": ticker,
+            "current_price": bundle["current_price"],
+            "close_price": bundle["close_price"],
+            "prev_close": bundle["prev_close"],
+            "pre_price": bundle["pre_price"],
+            "post_price": bundle["post_price"],
+            "market_session": bundle["market_session"],
+            "pe_ratio": round(info.get('trailingPE', 0), 2) if info.get('trailingPE') else "-",
+            "market_cap": f"{mcap / 1e12:.2f}T" if mcap else "-",
+            "fair_value": fair_value,
+            "fair_value_upside_pct": fair_value_upside_pct,
+            "volume": f"{vol / 1e6:.2f}M" if vol else "-",
+            "iv_rank": iv_rank,
+            "call_score": call_score,
+            "put_score": put_score,
+            "put_call_ratio": round(put_score / max(call_score, 1), 2)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Stats endpoint error: {str(e)}")
 
 @app.get("/api/indicators")
 def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Optional[float] = None):

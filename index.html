@@ -1795,6 +1795,10 @@ ${t}
             try {
                 // 1. Fetch Stats
                 const statsRes = await fetch(`/api/stats?ticker=${currentTicker}`);
+                if (!statsRes.ok) {
+                    const text = await statsRes.text();
+                    throw new Error(`Stats request failed: ${statsRes.status} ${statsRes.statusText} - ${text.slice(0, 250)}`);
+                }
                 const stats = await statsRes.json();
                 currentLivePrice = stats.current_price;
                 currentMarketSession = stats.market_session || "CLOSED";
@@ -1831,6 +1835,10 @@ ${t}
 
                 // 2. Fetch Chart Data
                 const chartRes = await fetch(`/api/chart-data?ticker=${currentTicker}&timeframe=${currentTimeframe}`);
+                if (!chartRes.ok) {
+                    const text = await chartRes.text();
+                    throw new Error(`Chart-data request failed: ${chartRes.status} ${chartRes.statusText} - ${text.slice(0, 250)}`);
+                }
                 const chartData = await chartRes.json();
                 globalChartData = chartData;
 
@@ -1857,6 +1865,10 @@ ${t}
 
                 // 3. Fetch Indicators (S/R)
                 const indRes = await fetch(`/api/indicators?ticker=${currentTicker}&timeframe=${currentTimeframe}`);
+                if (!indRes.ok) {
+                    const text = await indRes.text();
+                    throw new Error(`Indicators request failed: ${indRes.status} ${indRes.statusText} - ${text.slice(0, 250)}`);
+                }
                 srData = await indRes.json();
                 renderSRLadder();
 
