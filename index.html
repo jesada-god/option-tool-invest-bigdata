@@ -1947,8 +1947,8 @@ ${t}
                 const isMobile = window.innerWidth <= 768;
                 const allowedMobile = new Set(['R1','R2','R3','S1','S2','S3']);
 
-                const resToShow = Array.isArray(srData.resistance) ? srData.resistance.slice() : [];
-                const supToShow = Array.isArray(srData.support) ? srData.support.slice() : [];
+                let resToShow = Array.isArray(srData.resistance) ? srData.resistance.slice() : [];
+                let supToShow = Array.isArray(srData.support) ? srData.support.slice() : [];
 
                 if (isMobile) {
                     // Filter to only allowed labels on mobile
