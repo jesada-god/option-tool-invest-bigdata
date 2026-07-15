@@ -679,8 +679,28 @@ ${t}
                 const widths = [4, 3, 3];
                 const f = (p, c, w, t) => candleSeries.createPriceLine({ price: p, color: c, lineWidth: w, lineStyle: LightweightCharts.LineStyle.Solid, title: t });
 
-                srData.resistance.forEach((r, i) => srLines.push(f(r.level, resColors[i] || '#ff3b30', widths[i] || 3, `${r.label} แนวต้าน (${r.strength}% ${r.confidence})`)));
-                srData.support.forEach((s, i) => srLines.push(f(s.level, supColors[i] || '#00c57f', widths[i] || 3, `${s.label} แนวรับ (${s.strength}% ${s.confidence})`)));
+                // On small screens, only show primary S/R labels to avoid crowding the chart
+                const isMobile = window.innerWidth <= 768;
+                const allowedMobile = new Set(['R1','R2','R3','S1','S2','S3']);
+
+                const resToShow = Array.isArray(srData.resistance) ? srData.resistance.slice() : [];
+                const supToShow = Array.isArray(srData.support) ? srData.support.slice() : [];
+
+                if (isMobile) {
+                    // Filter to only allowed labels on mobile
+                    const filterFn = (it) => {
+                        if (!it || !it.label) return false;
+                        // Normalize label (take first token like 'R1' or 'S2')
+                        const token = String(it.label).trim().split(/\s|[:\-]/)[0];
+                        return allowedMobile.has(token);
+                    };
+                    // Keep original ordering but only allowed ones
+                    resToShow = resToShow.filter(filterFn);
+                    supToShow = supToShow.filter(filterFn);
+                }
+
+                resToShow.forEach((r, i) => srLines.push(f(r.level, resColors[i] || '#ff3b30', widths[i] || 3, `${r.label} แนวต้าน (${r.strength}% ${r.confidence})`)));
+                supToShow.forEach((s, i) => srLines.push(f(s.level, supColors[i] || '#00c57f', widths[i] || 3, `${s.label} แนวรับ (${s.strength}% ${s.confidence})`)));
 
                 isSRVisible = true; document.getElementById('toggle-sr').classList.add('active');
             }
