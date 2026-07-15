@@ -51,6 +51,7 @@ import pricing_engine as pe
 import stats_engine
 import portfolio_engine
 import gauges_engine
+import ai_engine
 from simulator_engine import ScenarioInput, run_multi_scenario
 from smart_sr_engine import compute_smart_levels
 
@@ -491,6 +492,256 @@ def estimate_eta(distance: float, atr, bar_seconds: int):
     total_seconds = bars_needed * bar_seconds
     return format_duration(total_seconds)
 
+
+# ---------------------------------------------------------------------------
+# 🤖 AI Terminal Score (transparent multi-factor decision support)
+# ---------------------------------------------------------------------------
+def _score_clip(value: float, low: float = 0.0, high: float = 100.0) -> float:
+    """Clamp a score and keep all externally returned values JSON-safe."""
+    try:
+        numeric = float(value)
+        if not math.isfinite(numeric):
+            return 50.0
+        return round(max(low, min(high, numeric)), 1)
+    except (TypeError, ValueError):
+        return 50.0
+
+
+def _terminal_stance(score: float) -> str:
+    """Human-readable market stance; deliberately not a trade instruction."""
+    if score >= 75:
+        return "STRONGLY BULLISH"
+    if score >= 60:
+        return "BULLISH"
+    if score >= 45:
+        return "NEUTRAL"
+    if score >= 30:
+        return "BEARISH"
+    return "STRONGLY BEARISH"
+
+
+def _terminal_risk_label(volatility_score: float) -> str:
+    if volatility_score >= 70:
+        return "High"
+    if volatility_score >= 40:
+        return "Medium"
+    return "Low"
+
+
+@ttl_cache(ttl_seconds=60)
+def build_terminal_score(ticker: str) -> dict:
+    """Build the terminal's explainable, daily multi-factor score.
+
+    The score intentionally uses only inputs this app can currently source:
+    price history, Smart S/R, options/IV data, and public company metadata.
+    News, social sentiment, and a licensed institutional-flow feed are not
+    silently fabricated; they remain outside the model until those feeds are
+    connected.  This prevents the UI from presenting synthetic certainty as
+    live market intelligence.
+    """
+    ticker = (ticker or "NVDA").upper().strip()
+    technical = stats_engine.analyze_key_statistics(ticker)
+    indicators = technical.get("indicators", {}) or {}
+    ratings = technical.get("ratings", {}) or {}
+
+    trend = _score_clip((ratings.get("trend_rating") or {}).get("score", 50))
+    momentum = _score_clip((ratings.get("momentum_rating") or {}).get("score", 50))
+    volatility = _score_clip((ratings.get("volatility_rating") or {}).get("score", 50))
+    current_iv = technical.get("current_iv")
+
+    price_bundle = get_price_bundle(ticker)
+    current_price = float(price_bundle.get("current_price") or indicators.get("last_close") or 0)
+    history = get_raw_history(ticker, "1d")
+    if history is None:
+        history = pd.DataFrame()
+    history = history.tail(252).copy()
+
+    components = []
+    availability = []
+
+    def add_component(key: str, label: str, score: float, weight: float, reason: str, available: bool = True):
+        components.append({
+            "key": key,
+            "label": label,
+            "score": _score_clip(score),
+            "weight": weight,
+            "reason": reason,
+            "available": bool(available),
+        })
+        availability.append(bool(available))
+
+    trend_reason = "; ".join((ratings.get("trend_rating") or {}).get("reasons", [])[:2])
+    add_component("trend", "Trend", trend, 20, trend_reason or "Trend data unavailable; held neutral.", bool(indicators))
+
+    momentum_reason = "; ".join((ratings.get("momentum_rating") or {}).get("reasons", [])[:2])
+    add_component("momentum", "Momentum", momentum, 15,
+                  momentum_reason or "Momentum data unavailable; held neutral.", bool(indicators))
+
+    price_action_score = 50.0
+    price_action_reason = "Insufficient daily history; held neutral."
+    if not history.empty and "Close" in history and len(history) >= 21:
+        closes = history["Close"].dropna()
+        if len(closes) >= 21 and closes.iloc[-6] > 0 and closes.iloc[-21] > 0:
+            return_5d = (float(closes.iloc[-1]) / float(closes.iloc[-6]) - 1) * 100
+            return_20d = (float(closes.iloc[-1]) / float(closes.iloc[-21]) - 1) * 100
+            price_action_score = _score_clip(50 + return_20d * 1.1 + return_5d * 0.8)
+            price_action_reason = f"5d return {return_5d:+.1f}% · 20d return {return_20d:+.1f}%"
+    add_component("price_action", "Price Action", price_action_score, 15, price_action_reason,
+                  price_action_reason.startswith("5d return"))
+
+    volume_score = 50.0
+    volume_reason = "Relative-volume data unavailable; held neutral."
+    relative_volume = indicators.get("relative_volume")
+    if relative_volume is not None:
+        try:
+            relative_volume = float(relative_volume)
+            direction = 1 if price_action_score >= 50 else -1
+            volume_score = _score_clip(50 + direction * min(abs(relative_volume - 1) * 22, 22))
+            volume_reason = f"Relative volume {relative_volume:.2f}×, confirming {'upside' if direction > 0 else 'downside'} price action"
+        except (TypeError, ValueError):
+            pass
+    add_component("volume", "Volume", volume_score, 10, volume_reason, relative_volume is not None)
+
+    sr_score = 50.0
+    sr_reason = "Smart S/R levels unavailable; held neutral."
+    nearest_support = None
+    nearest_resistance = None
+    try:
+        atr = get_atr_for_timeframe(ticker, "1d")
+        supports, resistances = compute_smart_levels(history, current_price, atr)
+        if supports:
+            nearest_support = min(supports, key=lambda z: abs(float(z["price"]) - current_price))
+        if resistances:
+            nearest_resistance = min(resistances, key=lambda z: abs(float(z["price"]) - current_price))
+        if current_price > 0 and (nearest_support or nearest_resistance):
+            support_pressure = 0.0
+            resistance_pressure = 0.0
+            if nearest_support:
+                support_distance = abs(float(nearest_support["price"]) - current_price) / current_price * 100
+                support_pressure = float(nearest_support["strength"]) * max(0.0, 1 - support_distance / 12)
+            if nearest_resistance:
+                resistance_distance = abs(float(nearest_resistance["price"]) - current_price) / current_price * 100
+                resistance_pressure = float(nearest_resistance["strength"]) * max(0.0, 1 - resistance_distance / 12)
+            sr_score = _score_clip(50 + (support_pressure - resistance_pressure) * 0.4)
+            support_text = f"support ${float(nearest_support['price']):.2f}" if nearest_support else "no nearby support"
+            resistance_text = f"resistance ${float(nearest_resistance['price']):.2f}" if nearest_resistance else "no nearby resistance"
+            sr_reason = f"Smart S/R: {support_text}; {resistance_text}"
+    except Exception:
+        pass
+    add_component("smart_sr", "Smart S/R", sr_score, 15, sr_reason,
+                  nearest_support is not None or nearest_resistance is not None)
+
+    info = {}
+    try:
+        info = yf.Ticker(ticker).info or {}
+    except Exception:
+        pass
+
+    options_score = 50.0
+    options_reason = "Options score unavailable; held neutral."
+    try:
+        call_score, put_score = calculate_option_scores(ticker, info)
+        options_score = _score_clip(call_score)
+        options_reason = f"Call setup {call_score}/100 · put setup {put_score}/100"
+    except Exception:
+        pass
+    add_component("options", "Options Setup", options_score, 10, options_reason, bool(info))
+
+    iv_rank = None
+    iv_score = 50.0
+    iv_reason = "IV rank unavailable; held neutral."
+    try:
+        iv_rank = calculate_iv_rank(ticker)
+        # Extremes are informative but not directionally bullish or bearish.
+        # Keep the effect deliberately narrow so IV cannot dominate the score.
+        iv_score = _score_clip(70 - abs(float(iv_rank) - 50) * 0.4)
+        iv_description = f"ATM IV {float(current_iv) * 100:.1f}%" if current_iv is not None else "IV proxy"
+        iv_reason = f"{iv_description} · IV rank {int(iv_rank)}/100"
+    except Exception:
+        pass
+    add_component("iv_context", "IV Context", iv_score, 5, iv_reason, iv_rank is not None)
+
+    fundamental_terms = []
+    target = info.get("targetMeanPrice")
+    if target and current_price > 0:
+        try:
+            upside = (float(target) - current_price) / current_price * 100
+            fundamental_terms.append(_score_clip(50 + upside * 0.6))
+        except (TypeError, ValueError):
+            pass
+    revenue_growth = info.get("revenueGrowth")
+    if revenue_growth is not None:
+        try:
+            fundamental_terms.append(_score_clip(50 + float(revenue_growth) * 100))
+        except (TypeError, ValueError):
+            pass
+    profit_margin = info.get("profitMargins")
+    if profit_margin is not None:
+        try:
+            fundamental_terms.append(_score_clip(50 + float(profit_margin) * 100))
+        except (TypeError, ValueError):
+            pass
+    fundamental_score = _score_clip(sum(fundamental_terms) / len(fundamental_terms)) if fundamental_terms else 50.0
+    if fundamental_terms:
+        fundamental_reason = f"Public fundamental inputs available: {len(fundamental_terms)}"
+    else:
+        fundamental_reason = "Analyst target/growth/margin data unavailable; held neutral."
+    add_component("fundamental", "Fundamental", fundamental_score, 10, fundamental_reason, bool(fundamental_terms))
+
+    active_components = [component for component in components if component["available"]]
+    active_weight = sum(component["weight"] for component in active_components)
+    score = _score_clip(
+        sum(component["score"] * component["weight"] for component in active_components) / active_weight
+    ) if active_weight else 50.0
+
+    # Reuse the existing transparent probability engine.  It renormalizes
+    # weights when a feed is absent, rather than treating missing data as a
+    # neutral market signal.
+    technical_score = _score_clip((trend + momentum + price_action_score + sr_score) / 4)
+    prediction = ai_engine.predict(ai_engine.FactorInput(
+        technical=technical_score if bool(indicators) and not history.empty else None,
+        fundamental=fundamental_score if fundamental_terms else None,
+        iv=iv_score if iv_rank is not None else None,
+        volume=volume_score if relative_volume is not None else None,
+        options_flow=options_score if bool(info) else None,
+        risk=_score_clip(100 - volatility) if bool(indicators) else None,
+        notes={
+            "technical": "Trend, momentum, price action, and Smart S/R composite",
+            "fundamental": fundamental_reason,
+            "iv": iv_reason,
+            "volume": volume_reason,
+            "options_flow": options_reason,
+            "risk": f"Volatility risk classified as {_terminal_risk_label(volatility)}",
+        },
+    ))
+    confidence = int(round(prediction.confidence_score))
+    coverage = int(round(sum(availability) / len(availability) * 100)) if availability else 0
+    # Volatility is a risk gauge, not a directional forecast.
+    risk = _terminal_risk_label(volatility)
+
+    return {
+        "ticker": ticker,
+        "model": "transparent_multi_factor_v1",
+        "model_timeframe": "1d",
+        "as_of": datetime.now(timezone.utc).isoformat(),
+        "score": int(round(score)),
+        "stance": _terminal_stance(score),
+        "bullish_bias": int(round(score)),
+        "bullish_probability": prediction.bullish_probability,
+        "bearish_probability": prediction.bearish_probability,
+        "neutral_probability": prediction.neutral_probability,
+        "confidence": confidence,
+        "coverage": coverage,
+        "risk": risk,
+        "current_price": round(current_price, 2) if current_price else None,
+        "iv_rank": int(iv_rank) if iv_rank is not None else None,
+        "components": components,
+        "limitations": [
+            "Rule-based decision support, not investment advice or a price forecast.",
+            "News sentiment, social signals, and licensed institutional-flow data are excluded until their data feeds are connected.",
+        ],
+    }
+
 # ---------------------------------------------------------------------------
 # 📦 API Endpoints
 # ---------------------------------------------------------------------------
@@ -568,6 +819,15 @@ def get_stats(ticker: str = "NVDA"):
         return sanitize_json(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stats endpoint error: {str(e)}")
+
+
+@app.get("/api/terminal-score")
+def get_terminal_score(ticker: str = "NVDA"):
+    """Explainable terminal-wide directional score for the active symbol."""
+    try:
+        return sanitize_json(build_terminal_score(ticker))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Terminal score error: {str(e)}")
 
 @app.get("/api/indicators")
 def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Optional[float] = None):

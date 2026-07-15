@@ -597,6 +597,177 @@
             transition: width 0.5s ease-in-out;
         }
 
+        .terminal-score-card {
+            background: linear-gradient(145deg, rgba(41, 98, 255, 0.14), rgba(20, 23, 34, 0.92) 55%);
+            border: 1px solid rgba(64, 126, 255, 0.42);
+            border-radius: 10px;
+            padding: 14px;
+            overflow: hidden;
+        }
+
+        .terminal-score-heading {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            gap: 10px;
+            margin-bottom: 12px;
+        }
+
+        .terminal-score-heading h3 {
+            margin: 0;
+            font-size: 13px;
+            letter-spacing: 0.8px;
+            color: #b7ccff;
+        }
+
+        .terminal-score-model {
+            font-size: 10px;
+            color: var(--text-muted);
+            border: 1px solid var(--panel-border);
+            border-radius: 99px;
+            padding: 3px 7px;
+            white-space: nowrap;
+        }
+
+        .terminal-score-hero {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+        }
+
+        .terminal-score-ring {
+            --score-progress: 50%;
+            --score-color: var(--gold);
+            width: 82px;
+            height: 82px;
+            border-radius: 50%;
+            background: conic-gradient(var(--score-color) var(--score-progress), #252a38 0);
+            display: grid;
+            place-items: center;
+            flex: 0 0 auto;
+        }
+
+        .terminal-score-ring::after {
+            content: '';
+            width: 68px;
+            height: 68px;
+            border-radius: 50%;
+            background: #151927;
+            border: 1px solid #293047;
+            grid-area: 1 / 1;
+        }
+
+        .terminal-score-value {
+            grid-area: 1 / 1;
+            z-index: 1;
+            text-align: center;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-weight: 800;
+            font-size: 23px;
+            line-height: 1;
+            color: white;
+        }
+
+        .terminal-score-value small {
+            display: block;
+            margin-top: 3px;
+            font-size: 9px;
+            font-weight: 600;
+            color: var(--text-muted);
+        }
+
+        .terminal-score-stance {
+            font-size: 17px;
+            font-weight: 800;
+            line-height: 1.2;
+        }
+
+        .terminal-score-subtitle {
+            margin: 4px 0 0;
+            font-size: 11px;
+            line-height: 1.4;
+            color: var(--text-muted);
+        }
+
+        .terminal-score-metrics {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 7px;
+            margin-top: 14px;
+        }
+
+        .terminal-score-metric {
+            background: rgba(12, 13, 20, 0.42);
+            border: 1px solid var(--panel-border);
+            border-radius: 6px;
+            padding: 7px;
+        }
+
+        .terminal-score-metric span {
+            display: block;
+            color: var(--text-muted);
+            font-size: 9px;
+            text-transform: uppercase;
+            letter-spacing: 0.35px;
+        }
+
+        .terminal-score-metric strong {
+            display: block;
+            margin-top: 3px;
+            color: white;
+            font-size: 13px;
+        }
+
+        .terminal-score-components {
+            display: grid;
+            gap: 6px;
+            margin-top: 13px;
+        }
+
+        .terminal-score-component {
+            display: grid;
+            grid-template-columns: minmax(78px, 1fr) 32px 1.4fr;
+            align-items: center;
+            gap: 7px;
+            font-size: 10px;
+        }
+
+        .terminal-score-component-label {
+            color: var(--text-muted);
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .terminal-score-component-score {
+            color: white;
+            text-align: right;
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-weight: 700;
+        }
+
+        .terminal-score-component-bar {
+            height: 5px;
+            overflow: hidden;
+            border-radius: 99px;
+            background: #292e3c;
+        }
+
+        .terminal-score-component-fill {
+            height: 100%;
+            border-radius: inherit;
+            transition: width 0.45s ease;
+        }
+
+        .terminal-score-note {
+            margin: 12px 0 0;
+            padding-top: 10px;
+            border-top: 1px solid var(--panel-border);
+            font-size: 10px;
+            line-height: 1.4;
+            color: var(--text-muted);
+        }
+
         .full-gauges-grid {
             display: grid;
             grid-template-columns: 1fr 1fr;
@@ -1116,6 +1287,28 @@
     </div>
 
     <div class="side-panel">
+        <section class="terminal-score-card" aria-live="polite" aria-label="AI Terminal Score">
+            <div class="terminal-score-heading">
+                <h3>✦ AI TERMINAL SCORE</h3>
+                <span class="terminal-score-model" id="terminal-score-model">Daily model</span>
+            </div>
+            <div class="terminal-score-hero">
+                <div class="terminal-score-ring" id="terminal-score-ring">
+                    <div class="terminal-score-value"><span id="terminal-score-value">—</span><small>/ 100</small></div>
+                </div>
+                <div>
+                    <div class="terminal-score-stance" id="terminal-score-stance">Loading…</div>
+                    <p class="terminal-score-subtitle" id="terminal-score-subtitle">Loading explainable market inputs…</p>
+                </div>
+            </div>
+            <div class="terminal-score-metrics">
+                <div class="terminal-score-metric"><span>Bull probability</span><strong id="terminal-score-bias">—</strong></div>
+                <div class="terminal-score-metric"><span>Confidence</span><strong id="terminal-score-confidence">—</strong></div>
+                <div class="terminal-score-metric"><span>Risk</span><strong id="terminal-score-risk">—</strong></div>
+            </div>
+            <div class="terminal-score-components" id="terminal-score-components"></div>
+            <p class="terminal-score-note" id="terminal-score-note">Rule-based decision support — not investment advice.</p>
+        </section>
         <div>
             <h3 style="margin:0; border-bottom:1px solid #242733; padding-bottom:10px; font-size:15px;"
                 id="stats-title">Key Statistics</h3>
@@ -1866,6 +2059,7 @@ ${t}
 
                 // 6. Phase 5: Full Gauge Suite (non-blocking)
                 loadFullGauges(currentTicker);
+                loadTerminalScore(currentTicker);
 
             } catch (err) {
                 console.error("Dashboard fetch error:", err);
@@ -2220,6 +2414,78 @@ ${t}
             if (score >= 45) return "var(--gold)";
             if (score >= 30) return "#ff8a3d";
             return "var(--red)";
+        }
+
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>'"]/g, char => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+            }[char]));
+        }
+
+        async function loadTerminalScore(ticker) {
+            const ring = document.getElementById('terminal-score-ring');
+            const valueEl = document.getElementById('terminal-score-value');
+            const stanceEl = document.getElementById('terminal-score-stance');
+            const subtitleEl = document.getElementById('terminal-score-subtitle');
+            const componentsEl = document.getElementById('terminal-score-components');
+            const noteEl = document.getElementById('terminal-score-note');
+            const modelEl = document.getElementById('terminal-score-model');
+
+            try {
+                const res = await fetch(`/api/terminal-score?ticker=${encodeURIComponent(ticker)}`);
+                if (!res.ok) {
+                    const detail = await res.text();
+                    throw new Error(`Terminal score request failed: ${res.status} - ${detail.slice(0, 180)}`);
+                }
+                const data = await res.json();
+                const score = Math.max(0, Math.min(100, Number(data.score)));
+                if (!Number.isFinite(score)) throw new Error('Terminal score response was invalid');
+
+                const color = gaugeColor(score);
+                ring.style.setProperty('--score-progress', `${score}%`);
+                ring.style.setProperty('--score-color', color);
+                valueEl.textContent = Math.round(score);
+                stanceEl.textContent = data.stance || 'NEUTRAL';
+                stanceEl.style.color = color;
+                subtitleEl.textContent = `${data.ticker || ticker} · ${data.model_timeframe || '1d'} multi-factor model`;
+                modelEl.textContent = `${String(data.model_timeframe || '1d').toUpperCase()} · ${Array.isArray(data.components) ? data.components.length : 0} inputs`;
+
+                const bullishProbability = Number(data.bullish_probability);
+                document.getElementById('terminal-score-bias').textContent = Number.isFinite(bullishProbability)
+                    ? `${bullishProbability.toFixed(0)}%`
+                    : `${Math.round(Number(data.bullish_bias) || score)}/100`;
+                document.getElementById('terminal-score-confidence').textContent = `${Math.round(Number(data.confidence) || 0)}%`;
+                document.getElementById('terminal-score-risk').textContent = data.risk || '—';
+
+                const components = Array.isArray(data.components) ? data.components : [];
+                componentsEl.innerHTML = components.map(component => {
+                    const componentScore = Math.max(0, Math.min(100, Number(component.score) || 0));
+                    const componentColor = gaugeColor(componentScore);
+                    const tooltip = escapeHtml(component.reason || '');
+                    return `<div class="terminal-score-component" title="${tooltip}">
+                        <span class="terminal-score-component-label">${escapeHtml(component.label || component.key)}</span>
+                        <span class="terminal-score-component-score">${Math.round(componentScore)}</span>
+                        <span class="terminal-score-component-bar"><span class="terminal-score-component-fill" style="width:${componentScore}%; background:${componentColor};"></span></span>
+                    </div>`;
+                }).join('');
+
+                if (!componentsEl.innerHTML.trim()) {
+                    componentsEl.innerHTML = '<span style="font-size:11px; color:var(--text-muted);">No score components available.</span>';
+                }
+                const limitation = Array.isArray(data.limitations) ? data.limitations[0] : null;
+                noteEl.textContent = limitation || 'Rule-based decision support — not investment advice.';
+            } catch (err) {
+                console.error('Terminal score fetch error:', err);
+                ring.style.setProperty('--score-progress', '0%');
+                ring.style.setProperty('--score-color', 'var(--red)');
+                valueEl.textContent = '—';
+                stanceEl.textContent = 'UNAVAILABLE';
+                stanceEl.style.color = 'var(--red)';
+                subtitleEl.textContent = 'The score will reload when market data is available.';
+                modelEl.textContent = 'Daily model';
+                componentsEl.innerHTML = '';
+                noteEl.textContent = 'Rule-based decision support — not investment advice.';
+            }
         }
 
         async function loadFullGauges(ticker) {

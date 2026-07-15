@@ -602,6 +602,7 @@ ${t}
 
                 // 6. Phase 5: Full Gauge Suite (non-blocking)
                 loadFullGauges(currentTicker);
+                loadTerminalScore(currentTicker);
 
             } catch (err) {
                 console.error("Dashboard fetch error:", err);
@@ -958,6 +959,78 @@ ${t}
             return "var(--red)";
         }
 
+        function escapeHtml(value) {
+            return String(value ?? '').replace(/[&<>'"]/g, char => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', "'": '&#39;', '"': '&quot;'
+            }[char]));
+        }
+
+        async function loadTerminalScore(ticker) {
+            const ring = document.getElementById('terminal-score-ring');
+            const valueEl = document.getElementById('terminal-score-value');
+            const stanceEl = document.getElementById('terminal-score-stance');
+            const subtitleEl = document.getElementById('terminal-score-subtitle');
+            const componentsEl = document.getElementById('terminal-score-components');
+            const noteEl = document.getElementById('terminal-score-note');
+            const modelEl = document.getElementById('terminal-score-model');
+
+            try {
+                const res = await fetch(`/api/terminal-score?ticker=${encodeURIComponent(ticker)}`);
+                if (!res.ok) {
+                    const detail = await res.text();
+                    throw new Error(`Terminal score request failed: ${res.status} - ${detail.slice(0, 180)}`);
+                }
+                const data = await res.json();
+                const score = Math.max(0, Math.min(100, Number(data.score)));
+                if (!Number.isFinite(score)) throw new Error('Terminal score response was invalid');
+
+                const color = gaugeColor(score);
+                ring.style.setProperty('--score-progress', `${score}%`);
+                ring.style.setProperty('--score-color', color);
+                valueEl.textContent = Math.round(score);
+                stanceEl.textContent = data.stance || 'NEUTRAL';
+                stanceEl.style.color = color;
+                subtitleEl.textContent = `${data.ticker || ticker} · ${data.model_timeframe || '1d'} multi-factor model`;
+                modelEl.textContent = `${String(data.model_timeframe || '1d').toUpperCase()} · ${Array.isArray(data.components) ? data.components.length : 0} inputs`;
+
+                const bullishProbability = Number(data.bullish_probability);
+                document.getElementById('terminal-score-bias').textContent = Number.isFinite(bullishProbability)
+                    ? `${bullishProbability.toFixed(0)}%`
+                    : `${Math.round(Number(data.bullish_bias) || score)}/100`;
+                document.getElementById('terminal-score-confidence').textContent = `${Math.round(Number(data.confidence) || 0)}%`;
+                document.getElementById('terminal-score-risk').textContent = data.risk || '—';
+
+                const components = Array.isArray(data.components) ? data.components : [];
+                componentsEl.innerHTML = components.map(component => {
+                    const componentScore = Math.max(0, Math.min(100, Number(component.score) || 0));
+                    const componentColor = gaugeColor(componentScore);
+                    const tooltip = escapeHtml(component.reason || '');
+                    return `<div class="terminal-score-component" title="${tooltip}">
+                        <span class="terminal-score-component-label">${escapeHtml(component.label || component.key)}</span>
+                        <span class="terminal-score-component-score">${Math.round(componentScore)}</span>
+                        <span class="terminal-score-component-bar"><span class="terminal-score-component-fill" style="width:${componentScore}%; background:${componentColor};"></span></span>
+                    </div>`;
+                }).join('');
+
+                if (!componentsEl.innerHTML.trim()) {
+                    componentsEl.innerHTML = '<span style="font-size:11px; color:var(--text-muted);">No score components available.</span>';
+                }
+                const limitation = Array.isArray(data.limitations) ? data.limitations[0] : null;
+                noteEl.textContent = limitation || 'Rule-based decision support — not investment advice.';
+            } catch (err) {
+                console.error('Terminal score fetch error:', err);
+                ring.style.setProperty('--score-progress', '0%');
+                ring.style.setProperty('--score-color', 'var(--red)');
+                valueEl.textContent = '—';
+                stanceEl.textContent = 'UNAVAILABLE';
+                stanceEl.style.color = 'var(--red)';
+                subtitleEl.textContent = 'The score will reload when market data is available.';
+                modelEl.textContent = 'Daily model';
+                componentsEl.innerHTML = '';
+                noteEl.textContent = 'Rule-based decision support — not investment advice.';
+            }
+        }
+
         async function loadFullGauges(ticker) {
             const grid = document.getElementById('full-gauges-grid');
             try {
@@ -1235,4 +1308,3 @@ ${t}
         }
 
         bootTerminal();
-    
