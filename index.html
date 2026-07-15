@@ -1632,11 +1632,6 @@
             requestAnimationFrame(syncPriceScaleWidths);
         }).observe(chartContainer);
 
-        function getSRRightOffset() {
-            const width = Math.max(100, Math.min(140, window.innerWidth * 0.12));
-            return width;
-        }
-
         function resetChartView() {
             if (globalChartData && globalChartData.length > 0) {
                 chart.priceScale('right').applyOptions({ autoScale: true });
@@ -1655,60 +1650,6 @@
                 isSyncing = false;
             }
         }
-
-        function applySRRightPadding() {
-            const offset = getSRRightOffset();
-            chart.applyOptions({ width: chartContainer.clientWidth, height: chartContainer.clientHeight });
-            volumeChart.applyOptions({ width: volumeContainer.clientWidth, height: volumeContainer.clientHeight });
-            chart.timeScale().applyOptions({ rightOffset: offset });
-            volumeChart.timeScale().applyOptions({ rightOffset: offset });
-        }
-
-        function renderSRLabelCache() {
-            const overlay = document.getElementById('sr-label-overlay');
-            overlay.innerHTML = '';
-            if (!isSRVisible || !srData) return;
-
-            const lines = [...srData.resistance.slice().reverse(), ...srData.support];
-            const chartHeight = chartContainer.clientHeight;
-            const step = 34;
-            const usedPositions = [];
-
-            lines.forEach(item => {
-                const label = document.createElement('div');
-                const type = item.label.startsWith('R') ? 'resistance' : 'support';
-                const labelColor = type === 'resistance' ? 'resistance' : 'support';
-                label.className = `sr-label-pin ${labelColor}`;
-                label.textContent = `${item.label} ${item.level.toFixed(2)}`;
-                const priceCoord = chart.priceScale('right').priceToCoordinate(item.level);
-                const top = Math.max(8, Math.min(chartHeight - 34, priceCoord - 16));
-                let finalTop = top;
-
-                while (usedPositions.some(pos => Math.abs(pos - finalTop) < step)) {
-                    finalTop += step;
-                    if (finalTop + 32 > chartHeight) {
-                        finalTop = Math.max(8, finalTop - step * 2);
-                        break;
-                    }
-                }
-                usedPositions.push(finalTop);
-                label.style.top = `${finalTop}px`;
-
-                const labelWidth = Math.min(overlay.clientWidth - 16, Math.max(68, item.label.length * 13 + 40));
-                label.style.width = `${labelWidth}px`;
-
-                overlay.appendChild(label);
-            });
-        }
-
-        function onChartViewportChanged() {
-            applySRRightPadding();
-            requestAnimationFrame(renderSRLabelCache);
-        }
-
-        chart.timeScale().subscribeVisibleLogicalRangeChange(() => onChartViewportChanged());
-        chart.subscribeCrosshairMove(() => onChartViewportChanged());
-        chart.priceScale('right').subscribeSizeChange(() => onChartViewportChanged());
 
         // --- 🌐 API Integration Data Fetching ---
         async function fetchWatchlist() {
