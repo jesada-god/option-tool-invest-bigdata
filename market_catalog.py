@@ -1,4 +1,4 @@
-"""Offline reference catalog for Portfolio Terminal search and category screens.
+"""Offline reference catalog for Quantora AI search and category screens.
 
 This module intentionally contains no market-data client, cache, or network call.
 It is a curated lookup aid for ticker discovery only; prices, company facts, and

@@ -2,7 +2,7 @@
 # The app serves the UI, REST API, and WebSocket from the same Render URL.
 services:
   - type: web
-    name: portfolio-terminal-ai
+    name: quantora-ai
     runtime: python
     region: singapore
     plan: free
@@ -16,3 +16,23 @@ services:
         value: "1"
       - key: TRUST_PROXY_HEADERS
         value: "true"
+      # Use Render's generated HTTPS URL as the fixed production auth origin.
+      # Override this value manually if the service later moves to a custom
+      # canonical domain, then update the matching Supabase redirect URLs.
+      - key: PUBLIC_APP_URL
+        fromService:
+          name: quantora-ai
+          type: web
+          envVarKey: RENDER_EXTERNAL_URL
+      # Render generates a private 256-bit value on first Blueprint creation.
+      # It is used to sign the short-lived server-side Google OAuth PKCE state.
+      - key: AUTH_STATE_SECRET
+        generateValue: true
+      # Prompt only while the Blueprint is initially created. Values are never
+      # committed and later Blueprint syncs leave the dashboard values intact.
+      - key: DATABASE_URL
+        sync: false
+      - key: SUPABASE_URL
+        sync: false
+      - key: SUPABASE_ANON_KEY
+        sync: false

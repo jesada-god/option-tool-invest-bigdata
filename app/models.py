@@ -85,6 +85,18 @@ class Profile(TimestampMixin, Base):
     notification_events: Mapped[list["NotificationEvent"]] = relationship(
         back_populates="profile", cascade="all, delete-orphan"
     )
+    favorites: Mapped[list["Favorite"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
+    search_history: Mapped[list["SearchHistory"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
+    recent_views: Mapped[list["RecentViewed"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
+    simulation_history: Mapped[list["SimulationHistory"]] = relationship(
+        back_populates="profile", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("email", name="uq_profiles_email"),
@@ -390,4 +402,116 @@ class NotificationEvent(Base):
             unique=True,
             postgresql_where=text("dedupe_key IS NOT NULL"),
         ),
+    )
+
+
+class Favorite(TimestampMixin, Base):
+    """A user-owned favorite ticker, independent from any one watchlist."""
+
+    __tablename__ = "favorites"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(12), nullable=False)
+
+    profile: Mapped[Profile] = relationship(back_populates="favorites")
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "ticker", name="uq_favorites_profile_ticker"),
+        CheckConstraint("ticker = upper(ticker)", name="ck_favorites_ticker_upper"),
+        CheckConstraint("char_length(ticker) BETWEEN 1 AND 12", name="ck_favorites_ticker_length"),
+        Index("ix_favorites_profile_created", "profile_id", "created_at"),
+    )
+
+
+class SearchHistory(Base):
+    """Cloud-synced recent search, capped at the API boundary."""
+
+    __tablename__ = "search_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(12), nullable=False)
+    query: Mapped[str] = mapped_column(String(120), nullable=False)
+    search_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    last_searched_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    profile: Mapped[Profile] = relationship(back_populates="search_history")
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "ticker", name="uq_search_history_profile_ticker"),
+        CheckConstraint("ticker = upper(ticker)", name="ck_search_history_ticker_upper"),
+        CheckConstraint("char_length(ticker) BETWEEN 1 AND 12", name="ck_search_history_ticker_length"),
+        CheckConstraint("char_length(query) BETWEEN 1 AND 120", name="ck_search_history_query_length"),
+        CheckConstraint("search_count >= 1", name="ck_search_history_count"),
+        Index("ix_search_history_profile_recent", "profile_id", "last_searched_at"),
+    )
+
+
+class RecentViewed(Base):
+    """A durable list of stock analysis pages most recently opened by a user."""
+
+    __tablename__ = "recent_viewed"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(12), nullable=False)
+    view_count: Mapped[int] = mapped_column(Integer, nullable=False, default=1, server_default="1")
+    last_viewed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    profile: Mapped[Profile] = relationship(back_populates="recent_views")
+
+    __table_args__ = (
+        UniqueConstraint("profile_id", "ticker", name="uq_recent_viewed_profile_ticker"),
+        CheckConstraint("ticker = upper(ticker)", name="ck_recent_viewed_ticker_upper"),
+        CheckConstraint("char_length(ticker) BETWEEN 1 AND 12", name="ck_recent_viewed_ticker_length"),
+        CheckConstraint("view_count >= 1", name="ck_recent_viewed_count"),
+        Index("ix_recent_viewed_profile_recent", "profile_id", "last_viewed_at"),
+    )
+
+
+class SimulationHistory(Base):
+    """User-owned calculator/simulator snapshots; no browser persistence is required."""
+
+    __tablename__ = "simulation_history"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    profile_id: Mapped[uuid.UUID] = mapped_column(
+        Uuid(as_uuid=True), ForeignKey("profiles.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(12), nullable=False)
+    simulation_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    input_json: Mapped[dict[str, Any]] = mapped_column(
+        "input", JSONValue, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    result_json: Mapped[dict[str, Any]] = mapped_column(
+        "result", JSONValue, nullable=False, default=dict, server_default=text("'{}'::jsonb")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+    profile: Mapped[Profile] = relationship(back_populates="simulation_history")
+
+    __table_args__ = (
+        CheckConstraint("ticker = upper(ticker)", name="ck_simulation_history_ticker_upper"),
+        CheckConstraint("char_length(ticker) BETWEEN 1 AND 12", name="ck_simulation_history_ticker_length"),
+        CheckConstraint("char_length(simulation_type) BETWEEN 1 AND 32", name="ck_simulation_history_type_length"),
+        Index("ix_simulation_history_profile_created", "profile_id", "created_at"),
     )

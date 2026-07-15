@@ -1,0 +1,9 @@
+{
+  "name": "Quantora AI — Investment Operating System",
+  "short_name": "Quantora AI",
+  "description": "Premium stock, ETF, and options analysis with Smart Support & Resistance.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#080a17",
+  "theme_color": "#080a17"
+}

@@ -3,10 +3,14 @@ import unittest
 from app.models import (
     Alert,
     Base,
+    Favorite,
     NotificationEvent,
     Portfolio,
     Position,
     Profile,
+    RecentViewed,
+    SearchHistory,
+    SimulationHistory,
     UserPreference,
     Watchlist,
     WatchlistItem,
@@ -34,6 +38,10 @@ class PersistenceSchemaTests(unittest.TestCase):
                 "positions",
                 "alerts",
                 "notification_events",
+                "favorites",
+                "search_history",
+                "recent_viewed",
+                "simulation_history",
             }.issubset(set(Base.metadata.tables))
         )
         self.assertEqual(Profile.__tablename__, "profiles")
@@ -44,6 +52,10 @@ class PersistenceSchemaTests(unittest.TestCase):
         self.assertEqual(Position.__tablename__, "positions")
         self.assertEqual(Alert.__tablename__, "alerts")
         self.assertEqual(NotificationEvent.__tablename__, "notification_events")
+        self.assertEqual(Favorite.__tablename__, "favorites")
+        self.assertEqual(SearchHistory.__tablename__, "search_history")
+        self.assertEqual(RecentViewed.__tablename__, "recent_viewed")
+        self.assertEqual(SimulationHistory.__tablename__, "simulation_history")
         self.assertIn("onboarding_completed_at", Profile.__table__.c)
 
     def test_default_uniqueness_and_high_value_query_indexes_exist(self):

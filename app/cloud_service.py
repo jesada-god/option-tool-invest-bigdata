@@ -784,6 +784,10 @@ def preference_payload(preference: UserPreference) -> dict[str, Any]:
     return {
         "theme": preference.theme,
         "language": preference.language,
+        "currency": settings.get("currency", "USD"),
+        "timezone": settings.get("timezone", "UTC"),
+        "default_timeframe": settings.get("default_timeframe", "1d"),
+        "default_indicator": settings.get("default_indicator", "Smart S/R"),
         "ema_settings": settings.get("ema_settings"),
         "ema_master_enabled": settings.get("ema_master_enabled"),
     }
@@ -794,8 +798,23 @@ def update_preferences(
     *,
     ema_settings: dict[str, Any] | None = None,
     ema_master_enabled: bool | None = None,
+    theme: str | None = None,
+    language: str | None = None,
+    currency: str | None = None,
+    timezone: str | None = None,
+    default_timeframe: str | None = None,
+    default_indicator: str | None = None,
 ) -> UserPreference:
     settings = dict(preference.settings or {})
+    if theme is not None:
+        if theme not in {"dark", "light", "system"}:
+            raise ValueError("theme must be dark, light, or system")
+        preference.theme = theme
+    if language is not None:
+        normalized_language = language.strip()
+        if not 2 <= len(normalized_language) <= 12:
+            raise ValueError("language must contain 2 to 12 characters")
+        preference.language = normalized_language
     if ema_settings is not None:
         if not isinstance(ema_settings, dict):
             raise ValueError("ema_settings must be an object")
@@ -804,5 +823,22 @@ def update_preferences(
         settings["ema_settings"] = ema_settings
     if ema_master_enabled is not None:
         settings["ema_master_enabled"] = bool(ema_master_enabled)
+    if currency is not None:
+        settings["currency"] = normalize_portfolio_currency(currency)
+    if timezone is not None:
+        normalized_timezone = timezone.strip()
+        if not normalized_timezone or len(normalized_timezone) > 64:
+            raise ValueError("timezone must contain 1 to 64 characters")
+        settings["timezone"] = normalized_timezone
+    if default_timeframe is not None:
+        normalized_timeframe = default_timeframe.strip()
+        if not normalized_timeframe or len(normalized_timeframe) > 16:
+            raise ValueError("default_timeframe must contain 1 to 16 characters")
+        settings["default_timeframe"] = normalized_timeframe
+    if default_indicator is not None:
+        normalized_indicator = default_indicator.strip()
+        if not normalized_indicator or len(normalized_indicator) > 48:
+            raise ValueError("default_indicator must contain 1 to 48 characters")
+        settings["default_indicator"] = normalized_indicator
     preference.settings = settings
     return preference

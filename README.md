@@ -1,6 +1,6 @@
-# Portfolio Terminal AI
+# Quantora AI
 
-Portfolio Terminal AI is a same-origin FastAPI application for stock, ETF, and
+Quantora AI is a same-origin FastAPI application for stock, ETF, and
 options analysis.  The existing chart, EMA, Smart Support & Resistance,
 indicators, live quote, What-if, Monte Carlo, gauges, options, portfolio, and
 search features remain in place; this version adds a production foundation for
@@ -18,6 +18,8 @@ cloud accounts, named workspaces, safer live-data delivery, and Render.
   stale-request guards are included
 - Optional Supabase Auth using HttpOnly, same-site cookies (email/password,
   password recovery, remember-me, and server-side PKCE Google sign-in)
+- PostgreSQL cloud workspace for portfolios, named watchlists, favorites,
+  recent searches, recently viewed symbols, notifications, and simulator history
 - Optional PostgreSQL cloud sync for profiles, preferences, portfolios,
   positions, named watchlists, and ordered watchlist items
 - Durable alert rules and a private in-app notification inbox.  Price and
@@ -85,7 +87,7 @@ Copy `.env.example` as a reference only; never commit a real `.env` file.
 | `DATABASE_URL_DIRECT` | Optional migrations | Direct PostgreSQL URL; useful when runtime uses a transaction pooler. |
 | `SUPABASE_URL` | Accounts | Project URL, e.g. `https://project.supabase.co`. |
 | `SUPABASE_ANON_KEY` | Accounts | Public anon key only. Never put a Supabase service-role key in this app. |
-| `PUBLIC_APP_URL` | Production auth | Exact public HTTPS origin, e.g. `https://portfolio-terminal-ai.onrender.com`. |
+| `PUBLIC_APP_URL` | Production auth | Exact public HTTPS origin, e.g. `https://quantora-ai.onrender.com`. |
 | `AUTH_STATE_SECRET` | Google sign-in | A unique random value of at least 32 characters. |
 | `AUTH_COOKIE_SECURE=true` | Production auth | Required for HTTPS-only cookies. |
 | `MARKET_DATA_PROVIDER` / `POLYGON_API_KEY` | Licensed quote source | Optional. See the market-data note below. |
@@ -115,7 +117,7 @@ missing, rather than falling back to an unsafe browser-token flow.
 
    ```powershell
    git add .
-   git commit -m "Prepare Portfolio Terminal AI deployment"
+  git commit -m "Prepare Quantora AI deployment"
    git branch -M main
    git remote add origin https://github.com/YOUR_ACCOUNT/YOUR_REPOSITORY.git
    git push -u origin main
@@ -125,12 +127,18 @@ missing, rather than falling back to an unsafe browser-token flow.
 
 2. On Render choose **New > Blueprint**, connect the repository, and apply
    `render.yaml`.
-3. Add the production variables above in the Render Environment page.  Do not
-   add secrets to `render.yaml` or GitHub.
+3. On a **new Blueprint**, Render prompts for `DATABASE_URL`, `SUPABASE_URL`,
+   and `SUPABASE_ANON_KEY`; the Blueprint generates `AUTH_STATE_SECRET` and
+   uses Render's HTTPS URL for `PUBLIC_APP_URL`.  Do not add secrets to
+   `render.yaml` or GitHub.  If this service already exists, add the three
+   secret values manually in Render's Environment page: Render only prompts
+   for `sync: false` variables during the initial Blueprint creation.
 4. Render runs `scripts/start-render.sh`.  When `DATABASE_URL` is present, it
    applies `alembic upgrade head` before starting FastAPI.
-5. Set `PUBLIC_APP_URL` to the deployed Render URL, then configure the matching
-   Supabase redirect URLs and redeploy once.
+5. The Blueprint maps `PUBLIC_APP_URL` to the initial `onrender.com` HTTPS URL.
+   If you use a custom canonical domain instead, replace that value with the
+   custom HTTPS origin, update the matching Supabase redirect URLs, and
+   redeploy once.
 6. Confirm `/healthz`, `/readyz`, an email sign-in, cloud watchlist creation,
    and a WebSocket price update before inviting users.
 
@@ -179,8 +187,8 @@ rule will run.
 ## Docker
 
 ```powershell
-docker build -t portfolio-terminal-ai .
-docker run --rm -p 8000:8000 -e PORT=8000 portfolio-terminal-ai
+docker build -t quantora-ai .
+docker run --rm -p 8000:8000 -e PORT=8000 quantora-ai
 ```
 
 To use cloud sync in Docker, pass the same production variables with `-e` or an

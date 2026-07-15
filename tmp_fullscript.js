@@ -12,6 +12,7 @@
         let currentPrevClose = 0;
         let currentClosePrice = 0;
         let watchlist = [];
+        let favoriteTickers = new Set();
         let ws = null;
         let wsReconnectTimer = null;
         let wsReconnectAttempts = 0;
@@ -25,6 +26,17 @@
         let categoryRailRequestVersion = 0;
         let categoryRailCategories = [];
         let selectedCategoryRail = '';
+        const TRENDING_INDUSTRIES = Object.freeze([
+            { name: 'AI', symbol: 'PLTR', count: 6 },
+            { name: 'Semiconductor', symbol: 'NVDA', count: 18 },
+            { name: 'Technology', symbol: 'AAPL', count: 8 },
+            { name: 'Healthcare', symbol: 'UNH', count: 7 },
+            { name: 'Banking', category: 'Bank', symbol: 'JPM', count: 8 },
+            { name: 'Energy', symbol: 'XOM', count: 8 },
+            { name: 'Crypto', symbol: 'COIN', count: 7 },
+            { name: 'Defense', symbol: 'LMT', count: 7 },
+        ]);
+        const industrySnapshots = new Map();
         let dashboardAbortController = null;
         let chartRefreshAbortController = null;
         let gaugesAbortController = null;
@@ -33,6 +45,7 @@
         let isNetworkOnline = navigator.onLine;
         let terminalResyncTimer = null;
         let preferenceSyncTimer = null;
+        let userPreferences = { theme: 'dark', language: 'en', currency: 'USD', timezone: 'UTC', default_timeframe: '1d', default_indicator: 'Smart S/R' };
         let authFormMode = 'sign-in';
         let authSessionEpoch = 0;
         let authState = { configured: null, authenticated: false, user: null, googleEnabled: false, cloudSyncEnabled: false, csrfToken: null, recoveryMode: false };
@@ -54,6 +67,10 @@
         // state. Server data remains the source of truth; no alert or event is
         // written to browser storage.
         const ALERT_CENTER_POLL_MS = 20_000;
+        // A Profile open/visibility transition may happen while a previous
+        // poll request is still resolving.  The generation invalidates that
+        // request's finally-handler so it cannot resurrect a second timer.
+        let alertCenterPollGeneration = 0;
         let alertCenterLoadPromise = null;
         let alertCenter = {
             alerts: [],
@@ -118,6 +135,151 @@
         const searchInput = document.getElementById('search-input');
         const autocompleteList = document.getElementById('autocomplete-list');
 
+        const APP_ROUTES = Object.freeze({
+            home: 'home-section', watchlist: 'watchlist-row', search: 'search-input',
+            analysis: 'tvchart', tools: 'tools-section', portfolio: 'portfolio-section', profile: 'profile-sheet',
+        });
+
+        function setNetworkStatus(isOnline) {
+            isNetworkOnline = Boolean(isOnline);
+            const banner = document.getElementById('network-banner');
+            if (banner) banner.classList.toggle('is-visible', !isNetworkOnline);
+            if (isNetworkOnline) {
+                void refreshChartOnly();
+                void loadAuthSession();
+            }
+        }
+
+        function setInitialSkeletonLoading(loading) {
+            document.querySelectorAll('.pt-stat-value, .pt-industry-performance, #home-live-price').forEach(element => {
+                element.classList.toggle('pt-skeleton', loading);
+                element.setAttribute('aria-busy', String(loading));
+            });
+        }
+
+        function setAuthGate(visible) {
+            const gate = document.getElementById('auth-gate');
+            if (!gate) return;
+            gate.classList.toggle('is-visible', Boolean(visible));
+            gate.setAttribute('aria-hidden', String(!visible));
+        }
+
+        function showSystemScreen(title, copy, actionLabel = 'Try again', action = () => window.location.reload(), mark = '!') {
+            const screen = document.getElementById('system-screen');
+            if (!screen) return;
+            document.getElementById('system-screen-mark').textContent = mark;
+            document.getElementById('system-screen-title').textContent = title;
+            document.getElementById('system-screen-copy').textContent = copy;
+            const button = document.getElementById('system-screen-action');
+            button.textContent = actionLabel;
+            button.onclick = action;
+            screen.classList.add('is-visible');
+            screen.setAttribute('aria-hidden', 'false');
+        }
+
+        function clearSystemScreen() {
+            const screen = document.getElementById('system-screen');
+            if (!screen) return;
+            screen.classList.remove('is-visible');
+            screen.setAttribute('aria-hidden', 'true');
+        }
+
+        function applyRouteFromLocation() {
+            const requested = decodeURIComponent((window.location.hash || '#/home').replace(/^#\/?/, '')).toLowerCase();
+            const target = requested === 'watchlists' ? 'watchlist' : requested;
+            if (!Object.prototype.hasOwnProperty.call(APP_ROUTES, target)) {
+                showSystemScreen('Page not found', 'This Quantora AI destination does not exist or may have moved.', 'Go to Home', () => {
+                    window.location.hash = '#/home';
+                }, '404');
+                return;
+            }
+            clearSystemScreen();
+            navigateTerminal(target, null, true);
+        }
+
+        window.addEventListener('hashchange', applyRouteFromLocation);
+        window.addEventListener('online', () => setNetworkStatus(true));
+        window.addEventListener('offline', () => setNetworkStatus(false));
+        window.addEventListener('unhandledrejection', event => {
+            if (!isNetworkOnline) return;
+            console.warn('Unhandled client request:', event.reason);
+        });
+
+        let stockWorkspaceTab = 'overview';
+        let stockWorkspaceRequestVersion = 0;
+
+        function setActiveStockWorkspaceTab(tab) {
+            stockWorkspaceTab = tab;
+            document.querySelectorAll('.pt-stock-tab').forEach(button => {
+                const active = button.dataset.stockTab === tab;
+                button.classList.toggle('is-active', active);
+                button.setAttribute('aria-selected', String(active));
+            });
+        }
+
+        function stockWorkspaceMetric(label, value) {
+            return `<div class="pt-company-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '—')}</strong></div>`;
+        }
+
+        async function openStockWorkspaceTab(tab) {
+            const workspace = document.getElementById('stock-workspace');
+            if (!workspace) return;
+            setActiveStockWorkspaceTab(tab);
+            if (tab === 'overview') {
+                workspace.classList.remove('is-open');
+                document.getElementById('tvchart')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+                return;
+            }
+            if (tab === 'options') { navigateTerminal('portfolio'); return; }
+            if (tab === 'simulator') { navigateTerminal('tools'); return; }
+            workspace.classList.add('is-open');
+            const ticker = currentTicker;
+            const requestVersion = ++stockWorkspaceRequestVersion;
+            workspace.innerHTML = `<h3>${escapeHtml(ticker)} · ${escapeHtml(tab)}</h3><p class="pt-empty-copy">Loading provider-backed analysis…</p>`;
+            workspace.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+            try {
+                if (tab === 'company') {
+                    const response = await fetch(`/api/company?ticker=${encodeURIComponent(ticker)}`, { cache: 'no-store' });
+                    if (!response.ok) throw new Error('Company information is unavailable.');
+                    const data = await response.json();
+                    if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
+                    const website = data.website && /^https?:\/\//.test(data.website) ? new URL(data.website).hostname : '—';
+                    const metrics = [['Sector', data.sector], ['Industry', data.industry], ['Exchange', data.exchange], ['Employees', Number.isFinite(Number(data.employees)) ? Number(data.employees).toLocaleString() : '—'], ['Market cap', Number.isFinite(Number(data.market_cap)) ? `$${(Number(data.market_cap) / 1e9).toFixed(1)}B` : '—'], ['Website', website]];
+                    workspace.innerHTML = `<h3>${escapeHtml(data.name || ticker)}</h3><p>${escapeHtml(data.summary || 'Company overview is not available from the configured market-data provider.')}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value))).join('')}</div>`;
+                    return;
+                }
+                if (tab === 'financial') {
+                    const [companyResponse, statsResponse] = await Promise.all([fetch(`/api/company?ticker=${encodeURIComponent(ticker)}`, { cache: 'no-store' }), fetch(`/api/stats?ticker=${encodeURIComponent(ticker)}`, { cache: 'no-store' })]);
+                    if (!companyResponse.ok || !statsResponse.ok) throw new Error('Financial data is unavailable.');
+                    const [company, stats] = await Promise.all([companyResponse.json(), statsResponse.json()]);
+                    if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
+                    const metrics = [['Trailing P/E', company.trailing_pe], ['Forward P/E', company.forward_pe], ['Revenue', Number.isFinite(Number(company.revenue)) ? `$${(Number(company.revenue) / 1e9).toFixed(2)}B` : '—'], ['Profit margin', Number.isFinite(Number(company.profit_margin)) ? `${(Number(company.profit_margin) * 100).toFixed(2)}%` : '—'], ['Dividend yield', Number.isFinite(Number(company.dividend_yield)) ? `${(Number(company.dividend_yield) * 100).toFixed(2)}%` : '—'], ['Fair value', stats.fair_value ? `$${Number(stats.fair_value).toFixed(2)}` : '—']];
+                    workspace.innerHTML = `<h3>${escapeHtml(ticker)} financial snapshot</h3><p>Provider-reported fields may be unavailable for some instruments. Values are not accounting advice.</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? '—'))).join('')}</div>`;
+                    return;
+                }
+                if (tab === 'news') {
+                    const response = await fetch(`/api/news?ticker=${encodeURIComponent(ticker)}`, { cache: 'no-store' });
+                    if (!response.ok) throw new Error('News is unavailable.');
+                    const data = await response.json();
+                    if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
+                    const items = Array.isArray(data.items) ? data.items : [];
+                    workspace.innerHTML = `<h3>${escapeHtml(ticker)} news</h3><p>Headlines are supplied by the configured market-data provider.</p><div class="pt-news-list">${items.length ? items.map(item => `<a class="pt-news-item" href="${escapeHtml(item.link || '#')}" ${item.link ? 'target="_blank" rel="noopener noreferrer"' : ''}>${escapeHtml(item.title)}<span>${escapeHtml(item.publisher || 'Market data provider')}</span></a>`).join('') : '<p class="pt-empty-copy">No current headlines are available.</p>'}</div>`;
+                    return;
+                }
+                if (tab === 'forecast') {
+                    const [aiResponse, levelsResponse] = await Promise.all([fetch(`/api/ai-recommendation?ticker=${encodeURIComponent(ticker)}`, { cache: 'no-store' }), fetch(`/api/indicators?ticker=${encodeURIComponent(ticker)}&timeframe=week`, { cache: 'no-store' })]);
+                    if (!aiResponse.ok || !levelsResponse.ok) throw new Error('Forecast inputs are unavailable.');
+                    const [ai, levels] = await Promise.all([aiResponse.json(), levelsResponse.json()]);
+                    if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
+                    const closest = levels.closest_alert || {};
+                    const metrics = [['Signal', ai.signal], ['Confidence', `${Number(ai.confidence_score || 0).toFixed(1)}/100`], ['Bullish', `${Number(ai.bullish_probability || 0).toFixed(1)}%`], ['Bearish', `${Number(ai.bearish_probability || 0).toFixed(1)}%`], ['Closest weekly S/R', closest.label ? `${closest.label} · $${Number(closest.level).toFixed(2)}` : '—'], ['Distance', Number.isFinite(Number(closest.distance_pct)) ? `${Number(closest.distance_pct).toFixed(2)}%` : '—']];
+                    workspace.innerHTML = `<h3>${escapeHtml(ticker)} analytical forecast</h3><p>${escapeHtml(ai.disclaimer || 'Analytical signal only.')}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? '—'))).join('')}</div>`;
+                }
+            } catch (error) {
+                if (requestVersion === stockWorkspaceRequestVersion && ticker === currentTicker) workspace.innerHTML = `<h3>${escapeHtml(ticker)} · ${escapeHtml(tab)}</h3><p class="pt-empty-copy">${escapeHtml(error.message || 'This data is temporarily unavailable. Please retry.')}</p>`;
+            }
+        }
+
         // --- ✨ V2 application shell: navigation only, existing engines stay in place ---
         function setActiveNavigation(target) {
             document.querySelectorAll('.pt-nav-item').forEach(item => {
@@ -125,10 +287,11 @@
             });
         }
 
-        function navigateTerminal(target, source) {
+        function navigateTerminal(target, source, suppressRouteUpdate = false) {
             if (target === 'profile') {
                 setActiveNavigation('profile');
                 openProfileSheet();
+                if (!suppressRouteUpdate && window.location.hash !== '#/profile') window.location.hash = '#/profile';
                 return;
             }
 
@@ -151,6 +314,7 @@
             }
 
             if (source) setActiveNavigation(source.dataset.nav || target);
+            if (!suppressRouteUpdate && window.location.hash !== `#/${target}`) window.location.hash = `#/${target}`;
         }
 
         function openProfileSheet() {
@@ -179,7 +343,7 @@
 
         function profileInitials(user) {
             const source = user && (user.username || user.email || user.display_name);
-            if (!source) return 'PT';
+            if (!source) return 'QA';
             return String(source).trim().slice(0, 2).toUpperCase() || 'PT';
         }
 
@@ -188,6 +352,104 @@
             if (includeJson) headers['Content-Type'] = 'application/json';
             if (authState.csrfToken) headers['X-CSRF-Token'] = authState.csrfToken;
             return headers;
+        }
+
+        function updateFavoriteButton() {
+            const button = document.getElementById('favorite-current-button');
+            if (!button) return;
+            const favorite = favoriteTickers.has(currentTicker);
+            button.textContent = favorite ? '★ Favorited' : '☆ Favorite';
+            button.setAttribute('aria-pressed', String(favorite));
+        }
+
+        async function loadCloudFavorites() {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) {
+                favoriteTickers = new Set();
+                updateFavoriteButton();
+                return;
+            }
+            try {
+                const response = await authFetch('/api/favorites', { headers: authHeaders(), cache: 'no-store' });
+                if (!response.ok) throw new Error('Unable to load favorites.');
+                const data = await response.json();
+                favoriteTickers = new Set((data.items || []).map(item => String(item.ticker || '').toUpperCase()));
+                updateFavoriteButton();
+            } catch (error) {
+                console.warn('Cloud favorites could not be loaded:', error);
+            }
+        }
+
+        function renderRecentViewed(items = []) {
+            const host = document.getElementById('recent-viewed-list');
+            if (!host) return;
+            host.replaceChildren();
+            if (!items.length) {
+                const empty = document.createElement('p');
+                empty.className = 'pt-empty-copy';
+                empty.textContent = authState.authenticated ? 'Open an instrument to build your personal research trail.' : 'Sign in to sync recently viewed instruments across devices.';
+                host.appendChild(empty);
+                return;
+            }
+            items.forEach(item => {
+                const ticker = String(item.ticker || '').toUpperCase();
+                if (!ticker) return;
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'pt-recent-symbol';
+                button.innerHTML = `<strong>${escapeHtml(ticker)}</strong><span>${Number(item.count || 1)} view${Number(item.count || 1) === 1 ? '' : 's'}</span>`;
+                button.addEventListener('click', () => switchStock(ticker));
+                host.appendChild(button);
+            });
+        }
+
+        async function loadRecentViewed() {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) {
+                renderRecentViewed([]);
+                return;
+            }
+            try {
+                const response = await authFetch('/api/recent-viewed?limit=12', { headers: authHeaders(), cache: 'no-store' });
+                if (!response.ok) throw new Error('Unable to load recently viewed instruments.');
+                const data = await response.json();
+                renderRecentViewed(Array.isArray(data.items) ? data.items : []);
+            } catch (error) {
+                console.warn('Recently viewed instruments could not be loaded:', error);
+            }
+        }
+
+        function recordRecentViewed(ticker) {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) return;
+            void authFetch('/api/recent-viewed', { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ ticker }) })
+                .then(response => response.ok ? loadRecentViewed() : undefined)
+                .catch(error => console.warn('Recently viewed instrument could not be recorded:', error));
+        }
+
+        async function toggleCurrentFavorite() {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) {
+                openProfileSheet();
+                setAuthStatus('Sign in before saving a favorite.', 'error');
+                return;
+            }
+            const ticker = currentTicker;
+            const isFavorite = favoriteTickers.has(ticker);
+            try {
+                const response = await authFetch(isFavorite ? `/api/favorites/${encodeURIComponent(ticker)}` : '/api/favorites', {
+                    method: isFavorite ? 'DELETE' : 'POST',
+                    headers: authHeaders(!isFavorite),
+                    body: isFavorite ? undefined : JSON.stringify({ ticker }),
+                });
+                if (!response.ok) throw new Error('Unable to update favorite.');
+                if (isFavorite) favoriteTickers.delete(ticker); else favoriteTickers.add(ticker);
+                updateFavoriteButton();
+            } catch (error) {
+                console.warn('Cloud favorite could not be saved:', error);
+            }
+        }
+
+        function recordCloudActivity(path, payload) {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) return;
+            void authFetch(path, { method: 'POST', headers: authHeaders(true), body: JSON.stringify(payload) })
+                .catch(error => console.warn('Cloud activity could not be recorded:', error));
         }
 
         async function authFetch(input, init = {}) {
@@ -361,6 +623,7 @@
                 alertCenter.abortController.abort();
             }
             if (alertCenter.pollTimer) window.clearTimeout(alertCenter.pollTimer);
+            alertCenterPollGeneration += 1;
             const requestVersion = alertCenter.requestVersion + 1;
             alertCenterLoadPromise = null;
             alertCenter = {
@@ -374,18 +637,20 @@
         function stopAlertCenterPolling() {
             if (alertCenter.pollTimer) window.clearTimeout(alertCenter.pollTimer);
             alertCenter.pollTimer = null;
+            alertCenterPollGeneration += 1;
         }
 
         function startAlertCenterPolling() {
             stopAlertCenterPolling();
             if (!alertCenterEnabled() || !isPageVisible || !isNetworkOnline) return;
+            const pollGeneration = alertCenterPollGeneration;
             const poll = () => {
-                if (!alertCenterEnabled() || !isPageVisible || !isNetworkOnline) {
+                if (pollGeneration !== alertCenterPollGeneration || !alertCenterEnabled() || !isPageVisible || !isNetworkOnline) {
                     alertCenter.pollTimer = null;
                     return;
                 }
                 void refreshAlertCenter({ quiet: true }).finally(() => {
-                    if (alertCenterEnabled() && isPageVisible && isNetworkOnline) {
+                    if (pollGeneration === alertCenterPollGeneration && alertCenterEnabled() && isPageVisible && isNetworkOnline) {
                         alertCenter.pollTimer = window.setTimeout(poll, ALERT_CENTER_POLL_MS);
                     }
                 });
@@ -973,6 +1238,14 @@
             currentButton.disabled = !selected;
             fields.appendChild(currentButton);
 
+            const preferenceRow = cloudWorkspaceElement('div', 'pt-workspace-split');
+            const pinButton = cloudWorkspaceButton(selected && selected.is_pinned ? 'Unpin list' : 'Pin list', toggleSelectedCloudWatchlistPin, 'ghost');
+            const favoriteButton = cloudWorkspaceButton(selected && selected.is_favorite ? 'Unfavorite list' : 'Favorite list', toggleSelectedCloudWatchlistFavorite, 'ghost');
+            pinButton.disabled = !selected;
+            favoriteButton.disabled = !selected;
+            preferenceRow.append(pinButton, favoriteButton);
+            fields.appendChild(preferenceRow);
+
             const tickerList = cloudWorkspaceElement('div', 'pt-workspace-ticker-list');
             const items = selected && Array.isArray(selected.items) ? selected.items : [];
             if (!items.length) {
@@ -1186,6 +1459,26 @@
             }, 'Watchlist renamed.');
         }
 
+        async function updateSelectedCloudWatchlist(payload, successMessage) {
+            const selected = selectedCloudWatchlist();
+            if (!selected) { setCloudWorkspaceStatus('Select a watchlist first.', 'error'); return; }
+            await mutateCloudWorkspace(`/api/watchlists/${selected.id}`, {
+                method: 'PATCH', headers: authHeaders(true), body: JSON.stringify(payload),
+            }, successMessage);
+        }
+
+        async function toggleSelectedCloudWatchlistPin() {
+            const selected = selectedCloudWatchlist();
+            if (!selected) return;
+            await updateSelectedCloudWatchlist({ is_pinned: !selected.is_pinned }, selected.is_pinned ? 'Watchlist unpinned.' : 'Watchlist pinned.');
+        }
+
+        async function toggleSelectedCloudWatchlistFavorite() {
+            const selected = selectedCloudWatchlist();
+            if (!selected) return;
+            await updateSelectedCloudWatchlist({ is_favorite: !selected.is_favorite }, selected.is_favorite ? 'Watchlist removed from favorites.' : 'Watchlist added to favorites.');
+        }
+
         async function deleteCloudWatchlist() {
             const selected = selectedCloudWatchlist();
             if (!selected) { setCloudWorkspaceStatus('Select a watchlist first.', 'error'); return; }
@@ -1260,12 +1553,21 @@
             if (avatarButton) avatarButton.textContent = initials;
             if (avatar) avatar.textContent = initials;
             if (!authState.authenticated || !user) {
-                if (name) name.textContent = authState.configured === false ? 'Portfolio Terminal' : 'Portfolio Terminal User';
+                if (name) name.textContent = authState.configured === false ? 'Quantora AI' : 'Quantora AI User';
                 if (email) email.textContent = authState.configured === false ? 'Cloud authentication is not configured' : 'Secure session required';
+                const greeting = document.getElementById('home-welcome-title');
+                const greetingCopy = document.getElementById('home-welcome-copy');
+                if (greeting) greeting.innerHTML = 'Welcome to <span>Quantora AI</span>';
+                if (greetingCopy) greetingCopy.textContent = 'Welcome to your portfolio. Live market analysis, Smart Support & Resistance, option tools, and portfolio intelligence in one premium workspace.';
                 return;
             }
-            if (name) name.textContent = user.username || user.display_name || 'Welcome to Portfolio Terminal';
+            if (name) name.textContent = user.username || user.display_name || 'Welcome to Quantora AI';
             if (email) email.textContent = user.email || 'Signed in securely';
+            const greeting = document.getElementById('home-welcome-title');
+            const greetingCopy = document.getElementById('home-welcome-copy');
+            const nickname = user.username || user.display_name;
+            if (greeting && nickname) greeting.innerHTML = `Hello ${escapeHtml(nickname)} <span>👋</span>`;
+            if (greetingCopy && nickname) greetingCopy.textContent = 'Welcome to your Portfolio. Your synced Quantora workspace is ready.';
         }
 
         function setAuthStatus(message, tone = '') {
@@ -1304,8 +1606,8 @@
                 if (needsOnboarding) {
                     host.innerHTML = `
                         <div class="pt-auth-stack">
-                            <div class="pt-sync-note" style="margin:0;">Welcome to Portfolio Terminal AI. Choose the username that will appear across your synced workspace.</div>
-                            <input id="onboarding-username" maxlength="32" autocomplete="username" placeholder="Username" value="${escapeHtml(user.is_provisional_username ? '' : (user.username || ''))}">
+                            <div class="pt-sync-note" style="margin:0;">Welcome to Quantora AI. Choose a unique nickname that will appear across your synced workspace.</div>
+                            <input id="onboarding-username" maxlength="32" autocomplete="username" placeholder="Nickname, e.g. Bas" value="${escapeHtml(user.is_provisional_username ? '' : (user.username || ''))}">
                             <button type="button" class="pt-auth-action" onclick="completeOnboarding()">Continue to dashboard</button>
                             <div id="profile-auth-status" class="pt-auth-status"></div>
                         </div>`;
@@ -1315,6 +1617,7 @@
                     <div class="pt-auth-stack">
                         <div class="pt-sync-note" style="margin:0;">${authState.cloudSyncEnabled ? 'Cloud sync is active for watchlists, positions, and indicator preferences on this account.' : 'Your account is signed in, but cloud storage is not configured on this deployment yet.'}</div>
                         ${authState.cloudSyncEnabled ? '<section id="cloud-workspace-manager" class="pt-workspace-manager" aria-label="Cloud workspace manager"><div id="cloud-workspace-content"></div></section><section id="alert-center-manager" class="pt-alert-manager" aria-label="Cloud alert rules and in-app notification inbox"><div id="alert-center-content"></div></section>' : ''}
+                        ${authState.cloudSyncEnabled ? `<details class="pt-sync-note" style="margin:0"><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">Workspace settings</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>Theme</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>Language</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>ไทย</option></select></label><label class="pt-tools-field"><span>Currency</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>Default timeframe</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">Changes save automatically to your cloud workspace.</p></details>` : ''}
                         <button type="button" class="pt-auth-action secondary" onclick="signOut()">Sign out</button>
                         <div id="profile-auth-status" class="pt-auth-status"></div>
                     </div>`;
@@ -1330,6 +1633,7 @@
                 <form class="pt-auth-stack" onsubmit="submitAuth(event)">
                     <input id="auth-email" type="email" autocomplete="email" placeholder="Email" required>
                     <input id="auth-password" type="password" minlength="8" autocomplete="${isSignUp ? 'new-password' : 'current-password'}" placeholder="Password" required>
+                    ${isSignUp ? '<input id="auth-confirm-password" type="password" minlength="8" autocomplete="new-password" placeholder="Confirm password" required>' : ''}
                     ${isSignUp ? '' : '<label style="display:flex; align-items:center; gap:8px; color:var(--text-muted); font-size:12px;"><input id="auth-remember" type="checkbox" checked style="width:auto; min-height:auto;">Remember this device</label>'}
                     <button type="submit" class="pt-auth-action">${isSignUp ? 'Create account' : 'Sign in'}</button>
                     ${authState.googleEnabled ? '<button type="button" class="pt-auth-action secondary" onclick="signInWithGoogle()">Continue with Google</button>' : ''}
@@ -1379,14 +1683,22 @@
             if (authState.authenticated && authState.cloudSyncEnabled) {
                 await loadCloudPreferences();
                 if (sessionEpoch !== authSessionEpoch) return;
+                await loadCloudFavorites();
+                if (sessionEpoch !== authSessionEpoch) return;
+                await loadRecentViewed();
+                if (sessionEpoch !== authSessionEpoch) return;
                 await loadCloudWorkspace();
                 if (sessionEpoch !== authSessionEpoch) return;
                 void refreshAlertCenter({ quiet: true });
                 startAlertCenterPolling();
             } else {
                 resetCloudWorkspace();
+                favoriteTickers = new Set();
+                updateFavoriteButton();
+                renderRecentViewed([]);
             }
             if (sessionEpoch !== authSessionEpoch) return;
+            setAuthGate(authState.configured === true && !authState.authenticated && !authState.recoveryMode);
             if (authState.authenticated && authState.user && (authState.user.needs_onboarding || !authState.user.username)) openProfileSheet();
         }
 
@@ -1394,7 +1706,12 @@
             event.preventDefault();
             const email = document.getElementById('auth-email').value.trim();
             const password = document.getElementById('auth-password').value;
+            const confirmation = document.getElementById('auth-confirm-password')?.value;
             const remember = Boolean(document.getElementById('auth-remember')?.checked);
+            if (authFormMode === 'sign-up' && password !== confirmation) {
+                setAuthStatus('Password confirmation does not match.', 'error');
+                return;
+            }
             const endpoint = authFormMode === 'sign-up' ? '/api/auth/sign-up' : '/api/auth/sign-in';
             setAuthStatus('Working securely…');
             try {
@@ -1478,6 +1795,8 @@
                 renderIndicatorsPanel();
                 updateEMASeries();
                 renderProfileAuthContent();
+                setAuthGate(authState.configured === true);
+                window.location.hash = '#/home';
             }
         }
 
@@ -1526,6 +1845,8 @@
                 if (!res.ok) return;
                 const data = await res.json();
                 const preference = data.preferences || data;
+                userPreferences = { ...userPreferences, ...preference };
+                document.documentElement.dataset.theme = userPreferences.theme || 'dark';
                 const savedSettings = preference.ema_settings;
                 if (savedSettings && typeof savedSettings === 'object') {
                     const merged = {};
@@ -1553,6 +1874,27 @@
                     console.warn('Cloud preferences could not be saved:', err);
                 }
             }, 350);
+        }
+
+        async function saveUserSettings() {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) return;
+            const payload = {
+                theme: document.getElementById('setting-theme')?.value || userPreferences.theme,
+                language: document.getElementById('setting-language')?.value || userPreferences.language,
+                currency: document.getElementById('setting-currency')?.value || userPreferences.currency,
+                default_timeframe: document.getElementById('setting-timeframe')?.value || userPreferences.default_timeframe,
+                timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || 'UTC',
+                default_indicator: userPreferences.default_indicator || 'Smart S/R',
+            };
+            try {
+                const response = await authFetch('/api/preferences', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload) });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Unable to save settings.');
+                userPreferences = { ...userPreferences, ...(data.preferences || data) };
+                document.documentElement.dataset.theme = userPreferences.theme || 'dark';
+            } catch (error) {
+                console.warn('Cloud settings could not be saved:', error);
+            }
         }
 
         function updateHomeWatchlistSurface() {
@@ -1615,6 +1957,92 @@
             }
         }
 
+        async function loadHomeAiRecommendation(ticker = currentTicker) {
+            const signalEl = document.getElementById('home-ai-signal');
+            const detailEl = document.getElementById('home-ai-detail');
+            if (!signalEl || !detailEl) return;
+            signalEl.textContent = 'Loading…';
+            signalEl.style.color = 'var(--pt-white)';
+            try {
+                const response = await fetch(`/api/ai-recommendation?ticker=${encodeURIComponent(ticker)}`, { cache: 'no-store' });
+                if (!response.ok) throw new Error('AI score unavailable');
+                const data = await response.json();
+                if (ticker !== currentTicker) return;
+                const signal = String(data.signal || 'Neutral');
+                signalEl.textContent = `${signal} · ${Number(data.confidence_score || 0).toFixed(0)}/100`;
+                signalEl.style.color = signal === 'Bullish' ? 'var(--green)' : signal === 'Bearish' ? 'var(--red)' : 'var(--gold)';
+                detailEl.textContent = `${data.ticker || ticker}: ${Number(data.bullish_probability || 0).toFixed(0)}% bull · ${Number(data.bearish_probability || 0).toFixed(0)}% bear`;
+            } catch (_) {
+                if (ticker === currentTicker) {
+                    signalEl.textContent = 'Unavailable';
+                    detailEl.textContent = 'AI signal will return when market data is available.';
+                }
+            }
+        }
+
+        function renderTrendingIndustries() {
+            const host = document.getElementById('trending-industries-list');
+            if (!host) return;
+            host.replaceChildren();
+            TRENDING_INDUSTRIES.forEach(industry => {
+                const card = document.createElement('button');
+                card.type = 'button';
+                card.className = 'pt-industry-card';
+                card.title = `Open ${industry.name} category`;
+                card.innerHTML = `<span class="pt-industry-name">${escapeHtml(industry.name)}</span><span class="pt-industry-performance">Loading…</span><span class="pt-industry-detail">${industry.count} stocks · ${escapeHtml(industry.symbol)} proxy</span>`;
+                card.addEventListener('click', () => { void selectCategoryRail(industry.category || industry.name); navigateTerminal('home'); });
+                host.appendChild(card);
+                void hydrateTrendingIndustry(card, industry);
+            });
+        }
+
+        function renderIndustryMovers() {
+            const host = document.getElementById('industry-movers');
+            if (!host) return;
+            const snapshots = Array.from(industrySnapshots.values()).filter(item => Number.isFinite(item.performance));
+            if (!snapshots.length) return;
+            host.replaceChildren();
+            const makeColumn = (title, items, tone) => {
+                const column = document.createElement('div');
+                const heading = document.createElement('h4');
+                heading.textContent = title;
+                column.appendChild(heading);
+                items.forEach(item => {
+                    const row = document.createElement('div');
+                    row.className = 'pt-mover';
+                    row.innerHTML = `<strong>${escapeHtml(item.name)}</strong><span class="${tone}">${item.performance >= 0 ? '+' : ''}${item.performance.toFixed(2)}%</span>`;
+                    column.appendChild(row);
+                });
+                return column;
+            };
+            const ordered = [...snapshots].sort((a, b) => b.performance - a.performance);
+            host.append(makeColumn('Top gainers', ordered.slice(0, 3), 'positive'), makeColumn('Top losers', ordered.slice(-3).reverse(), 'negative'));
+        }
+
+        async function hydrateTrendingIndustry(card, industry) {
+            try {
+                const response = await fetch(`/api/stats?ticker=${encodeURIComponent(industry.symbol)}`, { cache: 'no-store' });
+                if (!response.ok) throw new Error('price unavailable');
+                const stats = await response.json();
+                const price = Number(stats.current_price);
+                const previous = Number(stats.prev_close);
+                const performance = previous > 0 && Number.isFinite(price) ? ((price - previous) / previous) * 100 : NaN;
+                industrySnapshots.set(industry.name, { ...industry, performance });
+                renderIndustryMovers();
+                const performanceEl = card.querySelector('.pt-industry-performance');
+                const detailEl = card.querySelector('.pt-industry-detail');
+                if (performanceEl) {
+                    performanceEl.textContent = Number.isFinite(performance) ? `${performance >= 0 ? '+' : ''}${performance.toFixed(2)}%` : '—';
+                    performanceEl.classList.toggle('positive', performance >= 0);
+                    performanceEl.classList.toggle('negative', performance < 0);
+                }
+                if (detailEl) detailEl.textContent = `${industry.count} stocks · ${performance >= 0 ? 'Bullish' : 'Bearish'} momentum`;
+            } catch (_) {
+                const performanceEl = card.querySelector('.pt-industry-performance');
+                if (performanceEl) performanceEl.textContent = 'Data unavailable';
+            }
+        }
+
         // --- 🔎 ค้นหาหุ้นจากฐานข้อมูล Ticker ฝั่ง Backend ---
         // --- Reference category rail ---------------------------------------
         // The catalog is server-provided and intentionally carries no made-up
@@ -1652,7 +2080,7 @@
                 setCategoryRailMessage('No catalog instruments are available for this category.');
                 return;
             }
-            instruments.forEach(instrument => {
+            instruments.slice(0, 8).forEach(instrument => {
                 const symbol = String(instrument && instrument.symbol || '').toUpperCase().trim();
                 if (!/^[A-Z0-9.-]{1,12}$/.test(symbol)) return;
                 const button = document.createElement('button');
@@ -1663,11 +2091,40 @@
                 symbolEl.textContent = symbol;
                 const nameEl = document.createElement('span');
                 nameEl.textContent = String(instrument.name || instrument.sector || 'Open analysis');
-                button.append(symbolEl, nameEl);
+                const priceEl = document.createElement('span');
+                priceEl.className = 'pt-category-price';
+                priceEl.textContent = 'Loading price…';
+                const srEl = document.createElement('span');
+                srEl.className = 'pt-category-sr';
+                srEl.textContent = 'Weekly S/R loading…';
+                button.append(symbolEl, priceEl, srEl, nameEl);
                 button.addEventListener('click', () => switchStock(symbol));
                 host.appendChild(button);
+                void hydrateCategoryInstrument(symbol, priceEl, srEl);
             });
             if (!host.childElementCount) setCategoryRailMessage('No valid symbols are available for this category.');
+        }
+
+        async function hydrateCategoryInstrument(symbol, priceEl, srEl) {
+            try {
+                const [statsResponse, levelsResponse] = await Promise.all([
+                    fetch(`/api/stats?ticker=${encodeURIComponent(symbol)}`, { cache: 'no-store' }),
+                    fetch(`/api/indicators?ticker=${encodeURIComponent(symbol)}&timeframe=week`, { cache: 'no-store' }),
+                ]);
+                if (!statsResponse.ok || !levelsResponse.ok) throw new Error('instrument data unavailable');
+                const stats = await statsResponse.json();
+                const levels = await levelsResponse.json();
+                const price = Number(stats.current_price);
+                const previous = Number(stats.prev_close);
+                const change = previous > 0 && Number.isFinite(price) ? ((price - previous) / previous) * 100 : NaN;
+                priceEl.textContent = `${Number.isFinite(price) ? `$${price.toFixed(2)}` : '—'} ${Number.isFinite(change) ? `${change >= 0 ? '+' : ''}${change.toFixed(2)}%` : ''}`;
+                priceEl.style.color = change >= 0 ? 'var(--green)' : 'var(--red)';
+                const closest = levels && levels.closest_alert;
+                srEl.textContent = closest && closest.label ? `Near ${closest.label} (Week)` : 'Weekly S/R unavailable';
+            } catch (_) {
+                priceEl.textContent = 'Price unavailable';
+                srEl.textContent = 'Weekly S/R unavailable';
+            }
         }
 
         async function selectCategoryRail(category) {
@@ -1732,10 +2189,43 @@
             }
         }
 
+        async function showSearchHistory() {
+            if (!authState.authenticated || !authState.cloudSyncEnabled || searchInput.value) return;
+            try {
+                const response = await authFetch('/api/search-history?limit=8', { headers: authHeaders(), cache: 'no-store' });
+                if (!response.ok) return;
+                const data = await response.json();
+                const items = Array.isArray(data.items) ? data.items : [];
+                if (!items.length || searchInput.value) return;
+                autocompleteList.replaceChildren();
+                items.forEach(item => {
+                    const ticker = String(item.ticker || '').toUpperCase();
+                    if (!ticker) return;
+                    const option = document.createElement('div');
+                    const symbol = document.createElement('strong');
+                    symbol.textContent = ticker;
+                    const meta = document.createElement('span');
+                    meta.style.cssText = 'color:var(--text-muted); font-weight:normal; margin-left:7px;';
+                    meta.textContent = 'Recent search';
+                    option.append(symbol, meta);
+                    option.addEventListener('click', () => {
+                        searchInput.value = ticker;
+                        autocompleteList.style.display = 'none';
+                        recordCloudActivity('/api/search-history', { ticker, query: ticker });
+                        switchStock(ticker);
+                    });
+                    autocompleteList.appendChild(option);
+                });
+                autocompleteList.style.display = autocompleteList.childElementCount ? 'block' : 'none';
+            } catch (error) {
+                console.warn('Search history could not be loaded:', error);
+            }
+        }
+
         searchInput.addEventListener('input', function () {
             this.value = this.value.toUpperCase();
             const val = this.value;
-            if (!val) { autocompleteList.innerHTML = ''; autocompleteList.style.display = 'none'; return; }
+            if (!val) { autocompleteList.innerHTML = ''; autocompleteList.style.display = 'none'; void showSearchHistory(); return; }
 
             clearTimeout(searchDebounce);
             searchDebounce = setTimeout(async () => {
@@ -1770,6 +2260,7 @@
         searchInput.addEventListener('keypress', function (event) {
             if (event.key === 'Enter') { autocompleteList.style.display = 'none'; searchStock(); }
         });
+        searchInput.addEventListener('focus', () => { void showSearchHistory(); });
         document.addEventListener('click', function (e) { if (e.target !== searchInput) { autocompleteList.style.display = 'none'; } });
 
         // --- 📈 ตั้งค่าชาร์ตหลักด้วย Lightweight Charts ---
@@ -2079,12 +2570,45 @@
 
         function renderWatchlist() {
             const container = document.getElementById('watchlist-row');
-            container.innerHTML = watchlist.map(t => `
-<div class="watchlist-tag ${t === currentTicker ? 'active' : ''}" onclick="switchStock('${t}')">
-${t}
-<span class="remove-btn" onclick="event.stopPropagation(); deleteWatchlist('${t}')">×</span>
-</div>
-`).join('');
+            if (!container) return;
+            container.replaceChildren();
+            const items = Array.isArray(watchlist) ? watchlist : [];
+            items.forEach(value => {
+                const ticker = String(value || '').toUpperCase().trim();
+                if (!/^[A-Z0-9.-]{1,12}$/.test(ticker)) return;
+
+                const tag = document.createElement('div');
+                tag.className = `watchlist-tag${ticker === currentTicker ? ' active' : ''}`;
+                tag.setAttribute('role', 'button');
+                tag.tabIndex = 0;
+                tag.setAttribute('aria-label', `Open ${ticker} analysis`);
+                tag.appendChild(document.createTextNode(ticker));
+                tag.addEventListener('click', () => switchStock(ticker));
+                tag.addEventListener('keydown', event => {
+                    if (event.key === 'Enter' || event.key === ' ') {
+                        event.preventDefault();
+                        switchStock(ticker);
+                    }
+                });
+
+                const remove = document.createElement('span');
+                remove.className = 'remove-btn';
+                remove.textContent = '×';
+                remove.setAttribute('role', 'button');
+                remove.tabIndex = 0;
+                remove.setAttribute('aria-label', `Remove ${ticker} from watchlist`);
+                const removeTicker = event => {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    void deleteWatchlist(ticker);
+                };
+                remove.addEventListener('click', removeTicker);
+                remove.addEventListener('keydown', event => {
+                    if (event.key === 'Enter' || event.key === ' ') removeTicker(event);
+                });
+                tag.appendChild(remove);
+                container.appendChild(tag);
+            });
         }
 
         function formatUsd(value) {
@@ -2434,6 +2958,12 @@ ${t}
             invalidateViewRequests();
             closeLivePriceSocket();
             currentTicker = nextTicker;
+            updateFavoriteButton();
+            recordRecentViewed(nextTicker);
+            void loadHomeAiRecommendation(nextTicker);
+            if (stockWorkspaceTab !== 'overview' && stockWorkspaceTab !== 'options' && stockWorkspaceTab !== 'simulator') {
+                void openStockWorkspaceTab(stockWorkspaceTab);
+            }
             currentLivePrice = null;
             updateHomeMarketSurface({ current_price: null, prev_close: null, market_session: 'LOADING' });
             removeSRLines();
@@ -2444,6 +2974,7 @@ ${t}
         function searchStock() {
             const input = document.getElementById('search-input').value.toUpperCase().trim();
             if (!input) return;
+            recordCloudActivity('/api/search-history', { ticker: input, query: input });
             switchStock(input);
         }
 
@@ -3619,6 +4150,13 @@ ${t}
                     return;
                 }
 
+                recordCloudActivity('/api/simulation-history', {
+                    ticker: currentTicker,
+                    simulation_type: 'what_if',
+                    input_data: payload,
+                    result_data: data,
+                });
+
                 const color = data.pnl_total >= 0 ? 'var(--green)' : 'var(--red)';
                 const sign = data.pnl_total >= 0 ? '+' : '';
 
@@ -3861,6 +4399,7 @@ ${t}
 
         // --- 🚀 Phase 5: Advanced Multi-Scenario Monte Carlo Simulator -----
         let scenarioCount = 0;
+        let advancedSimulatorInFlight = false;
         function addScenarioCard() {
             scenarioCount++;
             const id = scenarioCount;
@@ -3924,6 +4463,7 @@ ${t}
         }
 
         async function runAdvancedSimulator() {
+            if (advancedSimulatorInFlight) return;
             const cards = document.querySelectorAll('.scenario-card');
             if (cards.length === 0) { alert("กรุณาเพิ่มอย่างน้อย 1 Scenario"); return; }
 
@@ -3942,24 +4482,38 @@ ${t}
             }));
 
             const resDiv = document.getElementById('advanced-sim-result');
-            resDiv.innerHTML = `<span style="color:var(--text-muted);">⏳ กำลังรัน Monte Carlo...</span>`;
+            const runButton = document.getElementById('advanced-sim-run');
+            advancedSimulatorInFlight = true;
+            if (runButton) runButton.disabled = true;
+            resDiv.replaceChildren();
+            const loading = document.createElement('span');
+            loading.style.color = 'var(--text-muted)';
+            loading.textContent = '⏳ กำลังรัน Monte Carlo...';
+            resDiv.appendChild(loading);
 
             try {
                 const res = await fetch('/api/simulate-advanced', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ ticker: currentTicker, scenarios })
                 });
-                const data = await res.json();
-                if (data.error) {
-                    resDiv.innerHTML = `<span style="color:var(--red);">⚠️ ${data.error}</span>`;
-                    return;
+                const data = await res.json().catch(() => null);
+                if (!res.ok || !data || data.error) {
+                    throw new Error(toolsCalculatorErrorMessage(data, `Monte Carlo request failed (${res.status}).`));
                 }
+                if (!Array.isArray(data.results)) throw new Error('Monte Carlo returned an invalid result set.');
+                recordCloudActivity('/api/simulation-history', {
+                    ticker: currentTicker,
+                    simulation_type: 'advanced_monte_carlo',
+                    input_data: { scenarios },
+                    result_data: { results: data.results },
+                });
 
                 const rows = data.results.map(r => {
-                    const color = r.expected_pl >= 0 ? 'var(--green)' : 'var(--red)';
+                    const expectedPl = Number(r.expected_pl);
+                    const color = Number.isFinite(expectedPl) && expectedPl >= 0 ? 'var(--green)' : 'var(--red)';
                     return `<tr>
-                        <td>${r.label}</td>
-                        <td>${r.n_sims.toLocaleString()}</td>
+                        <td>${escapeHtml(r.label)}</td>
+                        <td>${Number(r.n_sims).toLocaleString()}</td>
                         <td>$${r.expected_underlying_price}</td>
                         <td>$${r.expected_option_price}</td>
                         <td style="color:${color}; font-weight:bold;">$${r.expected_pl} (${r.expected_return_pct}%)</td>
@@ -3973,7 +4527,7 @@ ${t}
                 }).join('');
 
                 resDiv.innerHTML = `
-                    <div style="font-size:12px; color:var(--text-muted); margin-bottom:8px;">Underlying (${data.ticker}): <strong style="color:white;">$${data.underlying_price}</strong></div>
+                    <div style="font-size:12px; color:var(--text-muted); margin-bottom:8px;">Underlying (${escapeHtml(data.ticker)}): <strong style="color:white;">$${data.underlying_price}</strong></div>
                     <div class="table-responsive">
                     <table class="scenario-result-table">
                         <thead><tr>
@@ -3985,20 +4539,44 @@ ${t}
                     </div>`;
             } catch (err) {
                 console.error(err);
-                resDiv.innerHTML = `<span style="color:var(--red);">⚠️ ไม่สามารถติดต่อเซิร์ฟเวอร์ได้</span>`;
+                resDiv.replaceChildren();
+                const error = document.createElement('span');
+                error.style.color = 'var(--red)';
+                error.textContent = `⚠️ ${err && err.message ? err.message : 'ไม่สามารถติดต่อเซิร์ฟเวอร์ได้'}`;
+                resDiv.appendChild(error);
+            } finally {
+                advancedSimulatorInFlight = false;
+                if (runButton) runButton.disabled = false;
             }
         }
 
         async function bootTerminal() {
+            if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.register('/service-worker.js').catch(error => {
+                    console.warn('Quantora offline shell could not be registered:', error);
+                });
+            }
+            setInitialSkeletonLoading(true);
+            setNetworkStatus(navigator.onLine);
             renderIndicatorsPanel();
             renderToolsCalculatorFields();
+            renderTrendingIndustries();
             void loadCategoryRail();
+            void loadHomeAiRecommendation();
             addScenarioCard();
             await consumeAuthHash();
-            await loadAuthSession();
-            await fetchWatchlist();
-            await fetchDashboardData();
-            startChartAutoRefresh();
+            try {
+                await loadAuthSession();
+                await fetchWatchlist();
+                await fetchDashboardData();
+                applyRouteFromLocation();
+                startChartAutoRefresh();
+            } catch (error) {
+                console.error('Quantora could not start:', error);
+                showSystemScreen('Unable to start Quantora AI', 'Check your connection, then try loading the workspace again.');
+            } finally {
+                setInitialSkeletonLoading(false);
+            }
         }
 
         bootTerminal();

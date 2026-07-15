@@ -15,7 +15,7 @@ import re
 import ipaddress
 import hmac
 import threading
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Literal
 from urllib.parse import urlencode
@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 import pandas as pd
 from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy import select
 
 # --- JSON safety helpers ------------------------------------------------
 
@@ -81,6 +82,7 @@ from market_catalog import (
 )
 from simulator_engine import ScenarioInput, run_multi_scenario
 from smart_sr_engine import compute_smart_levels
+from ai_engine import FactorInput, predict as predict_ai
 from quote_hub import LiveQuoteHub, LiveQuoteHubCapacityError
 from rate_limit import SlidingWindowRateLimiter
 from app.auth import (
@@ -157,9 +159,12 @@ from app.alert_service import (
 from app.config import PersistenceConfigurationError, load_persistence_settings
 from app.db import PersistenceNotConfiguredError, database_ready, session_scope
 from app.repositories import ProfileRepository
+from app.models import Favorite, RecentViewed, SearchHistory, SimulationHistory
 
 BASE_DIR = Path(__file__).resolve().parent
 INDEX_FILE = BASE_DIR / "index.html"
+MANIFEST_FILE = BASE_DIR / "app.webmanifest"
+SERVICE_WORKER_FILE = BASE_DIR / "service-worker.js"
 
 app = FastAPI()
 logger = logging.getLogger("portfolio_terminal")
@@ -212,14 +217,17 @@ def request_client_identity(request: Request) -> str:
 
 @app.exception_handler(RequestValidationError)
 async def safe_request_validation_error(request: Request, exc: RequestValidationError):
-    """Do not echo passwords or bearer tokens in auth-route validation errors."""
-    if request.url.path.startswith("/api/auth/"):
-        detail = [
-            {key: error[key] for key in ("type", "loc", "msg") if key in error}
-            for error in exc.errors()
-        ]
-        return JSONResponse(status_code=422, content={"detail": detail})
-    return JSONResponse(status_code=422, content={"detail": jsonable_encoder(exc.errors())})
+    """Return useful validation errors without reflecting submitted values.
+
+    Pydantic includes the rejected ``input`` by default.  Besides leaking
+    credentials on auth routes, reflecting it makes any HTML client that
+    displays an error payload vulnerable to injected markup.
+    """
+    detail = [
+        {key: error[key] for key in ("type", "loc", "msg") if key in error}
+        for error in exc.errors()
+    ]
+    return JSONResponse(status_code=422, content={"detail": detail})
 
 
 @app.exception_handler(OperationalError)
@@ -283,6 +291,8 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
     response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    if request.url.scheme == "https" or request.headers.get("x-forwarded-proto", "").lower() == "https":
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; "
@@ -303,6 +313,10 @@ async def add_security_headers(request: Request, call_next):
         "/api/watchlists",
         "/api/alerts",
         "/api/notifications",
+        "/api/favorites",
+        "/api/search-history",
+        "/api/recent-viewed",
+        "/api/simulation-history",
         "/api/debug",
         "/api/cache",
     )
@@ -472,6 +486,12 @@ class PreferenceUpdateModel(BaseModel):
 
     ema_settings: Optional[dict[str, Any]] = None
     ema_master_enabled: Optional[bool] = None
+    theme: Optional[Literal["dark", "light", "system"]] = None
+    language: Optional[str] = Field(default=None, min_length=2, max_length=12)
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+    timezone: Optional[str] = Field(default=None, min_length=1, max_length=64)
+    default_timeframe: Optional[str] = Field(default=None, min_length=1, max_length=16)
+    default_indicator: Optional[str] = Field(default=None, min_length=1, max_length=48)
 
 
 class PortfolioCreateModel(BaseModel):
@@ -517,6 +537,50 @@ class WatchlistReorderModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     item_ids: list[int] = Field(max_length=500)
+
+
+class ActivityTickerModel(BaseModel):
+    """Ticker activity that is safe to retain in a user's cloud workspace."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str = Field(min_length=1, max_length=12)
+    query: Optional[str] = Field(default=None, min_length=1, max_length=120)
+
+    @field_validator("ticker")
+    @classmethod
+    def validate_activity_ticker(cls, value: str) -> str:
+        ticker = value.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,11}", ticker):
+            raise ValueError("ticker must contain only valid market symbol characters")
+        return ticker
+
+
+class SimulationHistoryCreateModel(BaseModel):
+    """A bounded, JSON-only record of a completed client simulation."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str = Field(min_length=1, max_length=12)
+    simulation_type: str = Field(min_length=1, max_length=32)
+    input_data: dict[str, Any] = Field(default_factory=dict)
+    result_data: dict[str, Any] = Field(default_factory=dict)
+
+    @field_validator("ticker")
+    @classmethod
+    def validate_simulation_ticker(cls, value: str) -> str:
+        ticker = value.strip().upper()
+        if not re.fullmatch(r"[A-Z0-9][A-Z0-9.\-]{0,11}", ticker):
+            raise ValueError("ticker must contain only valid market symbol characters")
+        return ticker
+
+    @field_validator("simulation_type")
+    @classmethod
+    def validate_simulation_type(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if not re.fullmatch(r"[a-z0-9_-]{1,32}", normalized):
+            raise ValueError("simulation_type must contain letters, numbers, underscores, or hyphens")
+        return normalized
 
 
 class AlertCreateModel(BaseModel):
@@ -1391,6 +1455,22 @@ async def serve_home():
     return FileResponse(INDEX_FILE)
 
 
+@app.get("/app.webmanifest", include_in_schema=False)
+async def serve_web_manifest():
+    """Serve the install metadata with the correct manifest content type."""
+    return FileResponse(MANIFEST_FILE, media_type="application/manifest+json")
+
+
+@app.get("/service-worker.js", include_in_schema=False)
+async def serve_service_worker():
+    """The worker caches only static shell files; user data always stays cloud-backed."""
+    return FileResponse(
+        SERVICE_WORKER_FILE,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache"},
+    )
+
+
 @app.get("/healthz", include_in_schema=False)
 def health_check():
     """Fast, dependency-free readiness endpoint for Render."""
@@ -1717,11 +1797,166 @@ def put_preferences(payload: PreferenceUpdateModel, request: Request, response: 
                 preference,
                 ema_settings=payload.ema_settings,
                 ema_master_enabled=payload.ema_master_enabled,
+                theme=payload.theme,
+                language=payload.language,
+                currency=payload.currency,
+                timezone=payload.timezone,
+                default_timeframe=payload.default_timeframe,
+                default_indicator=payload.default_indicator,
             )
             session.flush()
             return {"preferences": preference_payload(preference)}
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# ---------------------------------------------------------------------------
+# Cloud activity — favorites, recent search/viewed, simulator history
+# ---------------------------------------------------------------------------
+def _activity_payload(item: Any, *, timestamp_field: str) -> dict[str, Any]:
+    timestamp = getattr(item, timestamp_field, None)
+    return {
+        "id": int(item.id),
+        "ticker": item.ticker,
+        "count": int(getattr(item, "search_count", getattr(item, "view_count", 1))),
+        "query": getattr(item, "query", None),
+        "at": timestamp.isoformat() if timestamp else None,
+    }
+
+
+@app.get("/api/favorites")
+def get_favorites(request: Request, response: Response, limit: int = Query(100, ge=1, le=500)):
+    user = require_cloud_user(request, response)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        items = session.scalars(
+            select(Favorite).where(Favorite.profile_id == user.id).order_by(Favorite.created_at.desc()).limit(limit)
+        ).all()
+        return {"items": [{"id": int(item.id), "ticker": item.ticker, "created_at": item.created_at.isoformat()} for item in items]}
+
+
+@app.post("/api/favorites")
+def post_favorite(payload: ActivityTickerModel, request: Request, response: Response):
+    user = require_cloud_user(request, response, mutate=True)
+    try:
+        with session_scope() as session:
+            ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+            item = session.scalar(select(Favorite).where(Favorite.profile_id == user.id, Favorite.ticker == payload.ticker))
+            if item is None:
+                item = Favorite(profile_id=user.id, ticker=payload.ticker)
+                session.add(item)
+                session.flush()
+            return {"favorite": {"id": int(item.id), "ticker": item.ticker, "created_at": item.created_at.isoformat()}}
+    except IntegrityError:
+        # A double click or two tabs can race on the per-profile unique key;
+        # favorites are idempotent, so clients do not need a special retry flow.
+        return {"favorite": {"ticker": payload.ticker}}
+
+
+@app.delete("/api/favorites/{ticker}")
+def delete_favorite(ticker: str, request: Request, response: Response):
+    user = require_cloud_user(request, response, mutate=True)
+    ticker = normalize_ticker(ticker)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        item = session.scalar(select(Favorite).where(Favorite.profile_id == user.id, Favorite.ticker == ticker))
+        if item is not None:
+            session.delete(item)
+        return {"status": "deleted", "ticker": ticker}
+
+
+@app.get("/api/search-history")
+def get_search_history(request: Request, response: Response, limit: int = Query(20, ge=1, le=100)):
+    user = require_cloud_user(request, response)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        items = session.scalars(
+            select(SearchHistory).where(SearchHistory.profile_id == user.id).order_by(SearchHistory.last_searched_at.desc()).limit(limit)
+        ).all()
+        return {"items": [_activity_payload(item, timestamp_field="last_searched_at") for item in items]}
+
+
+@app.post("/api/search-history")
+def post_search_history(payload: ActivityTickerModel, request: Request, response: Response):
+    user = require_cloud_user(request, response, mutate=True)
+    query = (payload.query or payload.ticker).strip()
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        item = session.scalar(select(SearchHistory).where(SearchHistory.profile_id == user.id, SearchHistory.ticker == payload.ticker))
+        if item is None:
+            item = SearchHistory(profile_id=user.id, ticker=payload.ticker, query=query)
+            session.add(item)
+        else:
+            item.query = query
+            item.search_count += 1
+            item.last_searched_at = datetime.now(timezone.utc)
+        session.flush()
+        return {"item": _activity_payload(item, timestamp_field="last_searched_at")}
+
+
+@app.get("/api/recent-viewed")
+def get_recent_viewed(request: Request, response: Response, limit: int = Query(20, ge=1, le=100)):
+    user = require_cloud_user(request, response)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        items = session.scalars(
+            select(RecentViewed).where(RecentViewed.profile_id == user.id).order_by(RecentViewed.last_viewed_at.desc()).limit(limit)
+        ).all()
+        return {"items": [_activity_payload(item, timestamp_field="last_viewed_at") for item in items]}
+
+
+@app.post("/api/recent-viewed")
+def post_recent_viewed(payload: ActivityTickerModel, request: Request, response: Response):
+    user = require_cloud_user(request, response, mutate=True)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        item = session.scalar(select(RecentViewed).where(RecentViewed.profile_id == user.id, RecentViewed.ticker == payload.ticker))
+        if item is None:
+            item = RecentViewed(profile_id=user.id, ticker=payload.ticker)
+            session.add(item)
+        else:
+            item.view_count += 1
+            item.last_viewed_at = datetime.now(timezone.utc)
+        session.flush()
+        return {"item": _activity_payload(item, timestamp_field="last_viewed_at")}
+
+
+@app.get("/api/simulation-history")
+def get_simulation_history(request: Request, response: Response, limit: int = Query(20, ge=1, le=100)):
+    user = require_cloud_user(request, response)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        items = session.scalars(
+            select(SimulationHistory).where(SimulationHistory.profile_id == user.id).order_by(SimulationHistory.created_at.desc()).limit(limit)
+        ).all()
+        return {"items": [{"id": int(item.id), "ticker": item.ticker, "simulation_type": item.simulation_type, "input_data": item.input_json, "result_data": item.result_json, "created_at": item.created_at.isoformat()} for item in items]}
+
+
+@app.post("/api/simulation-history")
+def post_simulation_history(payload: SimulationHistoryCreateModel, request: Request, response: Response):
+    user = require_cloud_user(request, response, mutate=True)
+    input_data = sanitize_json(payload.input_data)
+    result_data = sanitize_json(payload.result_data)
+    if len(json.dumps(input_data)) > 25_000 or len(json.dumps(result_data)) > 25_000:
+        raise HTTPException(status_code=422, detail="Simulation history payload is too large.")
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        item = SimulationHistory(profile_id=user.id, ticker=payload.ticker, simulation_type=payload.simulation_type, input_json=input_data, result_json=result_data)
+        session.add(item)
+        session.flush()
+        return {"simulation": {"id": int(item.id), "ticker": item.ticker, "simulation_type": item.simulation_type, "created_at": item.created_at.isoformat()}}
+
+
+@app.delete("/api/simulation-history/{history_id}")
+def delete_simulation_history(history_id: int, request: Request, response: Response):
+    user = require_cloud_user(request, response, mutate=True)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        item = session.scalar(select(SimulationHistory).where(SimulationHistory.profile_id == user.id, SimulationHistory.id == history_id))
+        if item is None:
+            raise HTTPException(status_code=404, detail="Simulation history item was not found.")
+        session.delete(item)
+        return {"status": "deleted", "id": history_id}
 
 
 @app.on_event("shutdown")
@@ -2514,6 +2749,112 @@ def enrich_option_position(position: dict[str, Any]) -> dict[str, Any]:
         "market_data_stale": False,
         "valuation_source": valuation_source,
     })
+
+
+@app.get("/api/ai-recommendation")
+def get_ai_recommendation(ticker: str = "NVDA"):
+    """Explainable, data-availability-aware AI terminal score for one symbol.
+
+    This intentionally exposes the engine's inputs and confidence instead of
+    presenting an unqualified trading recommendation.
+    """
+    ticker = normalize_ticker(ticker)
+    stats = get_stats(ticker)
+    call_score = float(stats.get("call_score") or 50)
+    put_score = float(stats.get("put_score") or 50)
+    iv_rank = float(stats.get("iv_rank") or 50)
+    fair_value_upside = stats.get("fair_value_upside_pct")
+    try:
+        fundamental = max(0.0, min(100.0, 50.0 + float(fair_value_upside or 0)))
+    except (TypeError, ValueError):
+        fundamental = None
+    technical = max(0.0, min(100.0, (call_score + (100.0 - put_score)) / 2.0))
+    prediction = predict_ai(FactorInput(
+        technical=technical,
+        fundamental=fundamental,
+        iv=max(0.0, min(100.0, 100.0 - iv_rank)),
+        options_flow=max(0.0, min(100.0, 100.0 - put_score)),
+        notes={
+            "technical": "Derived from the terminal call and put technical scores.",
+            "fundamental": "Derived from the available fair-value upside estimate.",
+            "iv": "Lower IV rank scores as relatively more favorable; this is not a volatility forecast.",
+            "options_flow": "Derived from the terminal put-versus-call scoring balance.",
+        },
+    ))
+    signal = "Bullish" if prediction.bullish_probability >= 55 else "Bearish" if prediction.bearish_probability >= 55 else "Neutral"
+    return sanitize_json({
+        "ticker": ticker,
+        "signal": signal,
+        "bullish_probability": prediction.bullish_probability,
+        "bearish_probability": prediction.bearish_probability,
+        "neutral_probability": prediction.neutral_probability,
+        "confidence_score": prediction.confidence_score,
+        "factors_used": prediction.factors_used,
+        "factors_total": prediction.factors_total,
+        "reasoning": prediction.weighted_reasoning,
+        "disclaimer": "Explainable analytical signal only, not investment advice or an order recommendation.",
+    })
+
+
+@app.get("/api/company")
+@ttl_cache(ttl_seconds=300)
+def get_company_snapshot(ticker: str = "NVDA"):
+    """Small, provider-backed company snapshot for the stock analysis workspace."""
+    ticker = normalize_ticker(ticker)
+    try:
+        info = yf.Ticker(ticker).info or {}
+        return sanitize_json({
+            "ticker": ticker,
+            "name": info.get("longName") or info.get("shortName") or ticker,
+            "sector": info.get("sector") or "Unavailable",
+            "industry": info.get("industry") or "Unavailable",
+            "exchange": info.get("exchange") or "Unavailable",
+            "website": info.get("website"),
+            "employees": info.get("fullTimeEmployees"),
+            "summary": info.get("longBusinessSummary"),
+            "market_cap": info.get("marketCap"),
+            "revenue": info.get("totalRevenue"),
+            "profit_margin": info.get("profitMargins"),
+            "trailing_pe": info.get("trailingPE"),
+            "forward_pe": info.get("forwardPE"),
+            "dividend_yield": info.get("dividendYield"),
+        })
+    except Exception as exc:
+        logger.exception("Company snapshot failed for %s", ticker)
+        raise HTTPException(status_code=503, detail="Company information is temporarily unavailable.") from exc
+
+
+@app.get("/api/news")
+@ttl_cache(ttl_seconds=120)
+def get_stock_news(ticker: str = "NVDA", limit: int = Query(8, ge=1, le=20)):
+    """Return a compact, sanitized provider news feed without exposing raw payloads."""
+    ticker = normalize_ticker(ticker)
+    try:
+        raw_items = yf.Ticker(ticker).news or []
+        items = []
+        for raw in raw_items:
+            raw_item = raw if isinstance(raw, dict) else {}
+            content = raw_item.get("content", raw_item)
+            if not isinstance(content, dict):
+                content = {}
+            title = content.get("title") or raw_item.get("title")
+            if not title:
+                continue
+            provider = content.get("provider", {})
+            canonical = content.get("canonicalUrl", {})
+            link = canonical.get("url") if isinstance(canonical, dict) else raw_item.get("link")
+            items.append({
+                "title": str(title)[:300],
+                "publisher": provider.get("displayName") if isinstance(provider, dict) else raw_item.get("publisher"),
+                "link": link if isinstance(link, str) and link.startswith(("https://", "http://")) else None,
+                "published_at": content.get("pubDate") or raw_item.get("providerPublishTime"),
+            })
+            if len(items) >= limit:
+                break
+        return {"ticker": ticker, "items": items}
+    except Exception as exc:
+        logger.exception("News snapshot failed for %s", ticker)
+        raise HTTPException(status_code=503, detail="News is temporarily unavailable.") from exc
     return pos
 
 
@@ -2648,22 +2989,23 @@ async def websocket_endpoint(websocket: WebSocket, ticker: str):
 # 🔮 What-If Simulator API
 # ---------------------------------------------------------------------------
 class SimulatorModel(BaseModel):
-    strike_price: float
-    option_type: str
-    expiration: str
-    premium_paid: float
-    current_iv: float
-    target_price: float
-    target_date: str
+    """Validated inputs for the single-scenario What-If calculator."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    strike_price: float = Field(gt=0, le=1_000_000_000)
+    option_type: Literal["CALL", "PUT"]
+    expiration: date
+    premium_paid: float = Field(gt=0, le=1_000_000_000)
+    current_iv: float = Field(gt=0, le=500)
+    target_price: float = Field(gt=0, le=1_000_000_000)
+    target_date: date
 
 @app.post("/api/simulate")
 def simulate_option(data: SimulatorModel):
     try:
         # คำนวณวันหมดอายุ และจำนวนวันที่เหลือจนถึงเป้าหมาย
-        exp_date = datetime.strptime(data.expiration, "%Y-%m-%d")
-        tgt_date = datetime.strptime(data.target_date, "%Y-%m-%d")
-
-        days_to_exp = (exp_date - tgt_date).days
+        days_to_exp = (data.expiration - data.target_date).days
         if days_to_exp < 0:
             return {"error": "วันที่ตั้งเป้าหมาย ต้องไม่เกินวันหมดอายุของสัญญา!"}
 
@@ -2764,26 +3106,37 @@ def get_gauges(
 
 
 class SimScenarioModel(BaseModel):
-    label: str = "Scenario"
-    strike_price: float
+    """Validated inputs for the bounded advanced Monte Carlo endpoint."""
+
+    model_config = ConfigDict(extra="forbid", allow_inf_nan=False)
+
+    label: str = Field(default="Scenario", min_length=1, max_length=120)
+    strike_price: float = Field(gt=0, le=1_000_000_000)
     option_type: Literal["CALL", "PUT"] = "CALL"
-    expiration: str                      # YYYY-MM-DD
-    target_date: str                     # YYYY-MM-DD
-    premium_paid: float = 0.0
-    current_iv: float = 30.0             # percent, e.g. 42.5
-    quantity: int = 1
-    r: float = 0.05
-    q: float = 0.0
-    iv_shock_pts: float = 0.0
-    rate_shock_pts: float = 0.0
-    dividend_shock_pts: float = 0.0
+    expiration: date
+    target_date: date
+    premium_paid: float = Field(default=0.0, ge=0, le=1_000_000_000)
+    current_iv: float = Field(default=30.0, gt=0, le=500)  # percent, e.g. 42.5
+    quantity: int = Field(default=1, ge=1, le=10_000)
+    r: float = Field(default=0.05, ge=-0.5, le=1.0)
+    q: float = Field(default=0.0, ge=0, le=1.0)
+    iv_shock_pts: float = Field(default=0.0, ge=-500, le=500)
+    rate_shock_pts: float = Field(default=0.0, ge=-150, le=150)
+    dividend_shock_pts: float = Field(default=0.0, ge=-100, le=100)
     n_sims: int = Field(default=10_000, ge=1_000, le=50_000)
-    target_price_override: Optional[float] = None   # if set, overrides live price as S0
+    target_price_override: Optional[float] = Field(default=None, gt=0, le=1_000_000_000)
 
 
 class AdvancedSimulateRequest(BaseModel):
-    ticker: str
+    model_config = ConfigDict(extra="forbid")
+
+    ticker: str = Field(min_length=1, max_length=12)
     scenarios: list[SimScenarioModel] = Field(min_length=1, max_length=10)
+
+    @field_validator("ticker")
+    @classmethod
+    def validate_ticker(cls, value: str) -> str:
+        return normalize_ticker(value)
 
 
 @app.post("/api/simulate-advanced")
@@ -2795,14 +3148,12 @@ def simulate_advanced(req: AdvancedSimulateRequest):
                 status_code=422,
                 detail="Total simulations must not exceed 100000 per request.",
             )
-        S0 = get_base_price(req.ticker.upper())
-        today = datetime.now()
+        S0 = get_base_price(req.ticker)
+        today = date.today()
         scenario_inputs = []
         for s in req.scenarios:
-            exp_date = datetime.strptime(s.expiration, "%Y-%m-%d")
-            tgt_date = datetime.strptime(s.target_date, "%Y-%m-%d")
-            T_days_now = max((exp_date - today).days, 0)
-            target_days_from_now = max((tgt_date - today).days, 0)
+            T_days_now = max((s.expiration - today).days, 0)
+            target_days_from_now = max((s.target_date - today).days, 0)
             if target_days_from_now > T_days_now:
                 raise HTTPException(
                     status_code=422,
@@ -2811,7 +3162,7 @@ def simulate_advanced(req: AdvancedSimulateRequest):
 
             scenario_inputs.append(ScenarioInput(
                 label=s.label,
-                S0=s.target_price_override or S0,
+                S0=s.target_price_override if s.target_price_override is not None else S0,
                 K=s.strike_price,
                 T_days_now=T_days_now,
                 target_days_from_now=target_days_from_now,
@@ -2823,7 +3174,7 @@ def simulate_advanced(req: AdvancedSimulateRequest):
             ))
 
         results = run_multi_scenario(scenario_inputs)
-        return {"ticker": req.ticker.upper(), "underlying_price": S0,
+        return {"ticker": req.ticker, "underlying_price": S0,
                 "results": [jsonable_encoder(r) for r in results]}
     except HTTPException:
         raise

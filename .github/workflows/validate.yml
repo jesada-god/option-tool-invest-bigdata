@@ -22,8 +22,23 @@ jobs:
         run: python -m compileall -q .
       - name: Import application and verify health check
         run: python -c "import main; assert main.health_check()['status'] == 'ok'"
-      - name: Run deterministic live-quote hub tests
-        run: python -m unittest discover -s tests -p "test_*.py"
+      - name: Run deterministic unit tests
+        shell: bash
+        run: |
+          # Preserve the test command's exit status while writing the final
+          # traceback to the GitHub Job Summary.  This makes a failed deploy
+          # diagnosable without changing a failing check into a false pass.
+          set +e
+          python -m unittest discover -s tests -p "test_*.py" -v 2>&1 | tee "$RUNNER_TEMP/unittest.log"
+          test_status=${PIPESTATUS[0]}
+          {
+            echo "### Deterministic unit tests"
+            echo
+            echo '```text'
+            tail -n 240 "$RUNNER_TEMP/unittest.log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit "$test_status"
       - name: Validate Render startup script
         run: sh -n scripts/start-render.sh
 
