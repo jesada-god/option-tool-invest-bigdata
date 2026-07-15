@@ -467,26 +467,25 @@
             box-sizing: border-box;
             padding: 12px 12px 12px 0;
             z-index: 15;
+            display: none;
         }
 
         .sr-label-pin {
-            position: absolute;
-            right: 12px;
             display: inline-flex;
             align-items: center;
-            justify-content: flex-end;
+            justify-content: center;
             gap: 6px;
             white-space: nowrap;
             padding: 6px 10px;
             border-radius: 12px;
             font-size: 12px;
             line-height: 1.2;
-            max-width: calc(100% - 24px);
+            max-width: calc(100% - 18px);
             box-sizing: border-box;
             border: 1px solid rgba(255,255,255,0.08);
             background: rgba(15, 18, 28, 0.92);
             color: #ffffff;
-            text-align: right;
+            text-align: center;
             box-shadow: 0 6px 16px rgba(0, 0, 0, 0.18);
         }
 
@@ -1042,6 +1041,49 @@
 
             .dashboard-overlay table {
                 width: 100%;
+            }
+
+            #sr-label-overlay {
+                display: flex;
+                flex-wrap: wrap;
+                align-items: flex-start;
+                justify-content: flex-end;
+                gap: 6px;
+                position: absolute;
+                top: 10px;
+                right: 10px;
+                width: auto;
+                height: auto;
+                padding: 0;
+                z-index: 20;
+            }
+
+            .sr-label-pin {
+                position: relative;
+                padding: 6px 8px;
+                border-radius: 6px;
+                font-size: 11px;
+                min-height: 22px;
+                line-height: 1.1;
+                box-shadow: 0 4px 10px rgba(0, 0, 0, 0.16);
+            }
+
+            .sr-label-pin.resistance {
+                border-color: rgba(255, 59, 48, 0.35);
+                color: #ff9b9b;
+                background: rgba(255, 59, 48, 0.16);
+            }
+
+            .sr-label-pin.support {
+                border-color: rgba(0, 197, 127, 0.35);
+                color: #9dfdc4;
+                background: rgba(0, 197, 127, 0.14);
+            }
+
+            .sr-label-pin.left {
+                right: auto;
+                left: 0;
+                text-align: left;
             }
 
             .dashboard-header {
@@ -1697,7 +1739,7 @@ ${t}
             const banner = document.getElementById('sr-alert-banner');
             const ladder = document.getElementById('sr-ladder');
             const basisLabel = document.getElementById('sr-basis-label');
-            if (!srData) { ladder.innerHTML = ''; banner.style.display = 'none'; return; }
+            if (!srData) { ladder.innerHTML = ''; banner.style.display = 'none'; renderSRLabelOverlay(); return; }
 
             basisLabel.innerText = srData.basis_timeframe === 'week' ? 'อ้างอิง Week' : `อ้างอิง ${srData.basis_timeframe}`;
 
@@ -1737,7 +1779,31 @@ ${t}
             } else {
                 banner.style.display = 'none';
             }
+            renderSRLabelOverlay();
         }
+
+        function renderSRLabelOverlay() {
+            const overlay = document.getElementById('sr-label-overlay');
+            if (!srData || window.innerWidth > 768) {
+                overlay.style.display = 'none';
+                overlay.innerHTML = '';
+                return;
+            }
+
+            const labelTemplate = (item, type) => `
+                <div class="sr-label-pin ${type}" title="${item.label} $${item.level.toFixed(2)}">
+                    ${item.label}
+                </div>`;
+
+            const resistancePins = (srData.resistance || []).slice(0, 3).map(item => labelTemplate(item, 'resistance')).join('');
+            const supportPins = (srData.support || []).slice(0, 3).map(item => labelTemplate(item, 'support')).join('');
+            overlay.innerHTML = resistancePins + supportPins;
+            overlay.style.display = 'flex';
+        }
+
+        window.addEventListener('resize', () => {
+            if (srData) renderSRLabelOverlay();
+        });
 
         function recomputeSRDistances(livePrice) {
             if (!srData || !livePrice) return;
@@ -1878,6 +1944,7 @@ ${t}
                 } else if (ws) {
                     ws.close(); ws = null;
                 }
+                renderSRLabelOverlay();
                 await fetchPortfolio();
                 setTimeout(resetChartView, 50);
 

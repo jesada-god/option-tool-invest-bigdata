@@ -13,6 +13,38 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 import pandas as pd
 
+# --- JSON safety helpers ------------------------------------------------
+
+def sanitize_json_value(value):
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return value if math.isfinite(value) else None
+    if isinstance(value, (list, tuple)):
+        return [sanitize_json_value(v) for v in value]
+    if isinstance(value, dict):
+        return {k: sanitize_json_value(v) for k, v in value.items()}
+    try:
+        maybe_float = float(value)
+        if math.isfinite(maybe_float):
+            return maybe_float
+    except Exception:
+        pass
+    return value
+
+
+def sanitize_json(obj):
+    if isinstance(obj, dict):
+        return {k: sanitize_json(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [sanitize_json(v) for v in obj]
+    return sanitize_json_value(obj)
+
+
 # --- Phase 5: institutional engines -----------------------------------
 from cache import ttl_cache, get_cache_stats, clear_all_cache
 import pricing_engine as pe
@@ -515,7 +547,7 @@ def get_stats(ticker: str = "NVDA"):
         vol = info.get('volume', 0)
         fair_value, fair_value_upside_pct = calculate_fair_value(info, bundle["current_price"])
 
-        return {
+        result = {
             "ticker": ticker,
             "current_price": bundle["current_price"],
             "close_price": bundle["close_price"],
@@ -533,6 +565,7 @@ def get_stats(ticker: str = "NVDA"):
             "put_score": put_score,
             "put_call_ratio": round(put_score / max(call_score, 1), 2)
         }
+        return sanitize_json(result)
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Stats endpoint error: {str(e)}")
 
@@ -582,7 +615,7 @@ def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Opti
     closest = min(all_levels, key=lambda x: x["distance_pct"]) if all_levels else None
     strongest = max(all_levels, key=lambda x: x["strength"]) if all_levels else None
 
-    return {
+    return sanitize_json({
         "ticker": ticker,
         "current_price": round(current_price, 2),
         "timeframe_requested": timeframe,
@@ -596,7 +629,7 @@ def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Opti
         "s2": supports[1]["level"] if len(supports) > 1 else None,
         "r1": resistances[0]["level"] if len(resistances) > 0 else None,
         "r2": resistances[1]["level"] if len(resistances) > 1 else None,
-    }
+    })
 
 @app.get("/api/chart-data")
 def get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
@@ -830,7 +863,7 @@ def get_gauges(ticker: str = "NVDA", account_size: float = 100_000.0):
             account_size=account_size,
             options_chain_summary=chain_summary,
         )
-        return {"ticker": ticker, "gauges": gauges, "portfolio_context": pg}
+        return sanitize_json({"ticker": ticker, "gauges": gauges, "portfolio_context": pg})
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Gauges endpoint error: {str(e)}")
 
