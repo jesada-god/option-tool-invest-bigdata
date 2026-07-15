@@ -158,6 +158,17 @@ For a cookie-authenticated refresh, send the same-origin `X-CSRF-Token` header
 that the application received with its CSRF cookie. Tokens are never returned
 to or stored by browser JavaScript.
 
+### Auth UI maintenance
+
+The SPA authentication modal is the existing Profile sheet in `index.html`.
+`openProfileSheet()` opens it from the welcome gate, header avatar, or Profile
+navigation. `renderProfileAuthContent()` renders sign-in, registration,
+confirmation resend, recovery, onboarding, and authenticated states. The key
+element IDs are `profile-sheet`, `profile-auth-content`, `auth-email`,
+`auth-password`, and `auth-submit-button`. `authFetch()` keeps the current
+CSRF token in memory and opens the sign-in modal if another protected endpoint
+returns `401`; it never uses `localStorage` for credentials or tokens.
+
 ## Deploy from GitHub to Render
 
 1. Commit and push the project to a GitHub repository.

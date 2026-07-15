@@ -1641,6 +1641,13 @@
             margin-top: 18px;
         }
 
+        .pt-auth-intro { margin: 0; color: #adb8da; font-size: 12px; line-height: 1.45; }
+        .pt-auth-mode-switch { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; padding: 4px; border: 1px solid rgba(152, 173, 255, .17); border-radius: 13px; background: rgba(5, 8, 28, .48); }
+        .pt-auth-mode-switch button { min-height: 34px; border: 0; border-radius: 9px; color: #aebae0; background: transparent; font-size: 12px; font-weight: 800; }
+        .pt-auth-mode-switch button.is-active { color: #fff; background: linear-gradient(135deg, rgba(82, 104, 232, .94), rgba(133, 92, 232, .88)); box-shadow: 0 5px 12px rgba(34, 42, 130, .28); }
+        .pt-auth-field { display: grid; gap: 5px; }
+        .pt-auth-field span { color: #b7c2e5; font-size: 11px; font-weight: 750; }
+
         .pt-auth-stack input {
             width: 100%;
             box-sizing: border-box;
@@ -1666,6 +1673,9 @@
         }
 
         .pt-auth-action.secondary { background: rgba(36, 42, 77, 0.75); color: #d9deff; }
+        .pt-auth-action:disabled { cursor: wait; opacity: .62; }
+        .pt-auth-divider { display: flex; align-items: center; gap: 9px; color: #8995bb; font-size: 10px; text-transform: uppercase; letter-spacing: .08em; }
+        .pt-auth-divider::before, .pt-auth-divider::after { content: ''; flex: 1; height: 1px; background: rgba(155, 174, 255, .16); }
         .pt-auth-links { display: flex; justify-content: space-between; gap: 10px; font-size: 12px; }
         .pt-auth-links button { padding: 0; color: #a8b6ff; border: 0; cursor: pointer; background: none; }
         .pt-auth-status { min-height: 18px; color: var(--text-muted); font-size: 12px; line-height: 1.35; }
@@ -2710,6 +2720,7 @@
         });
         let authFormMode = 'sign-in';
         let authSessionEpoch = 0;
+        let authVerificationEmail = '';
         let authState = { configured: null, authenticated: false, user: null, googleEnabled: false, cloudSyncEnabled: false, csrfToken: null, recoveryMode: false };
         let cloudWorkspace = {
             watchlists: [],
@@ -3216,6 +3227,11 @@
             const response = await fetch(input, { ...init, credentials: 'same-origin' });
             const refreshedCsrf = response.headers.get('X-CSRF-Token');
             if (refreshedCsrf) authState.csrfToken = refreshedCsrf;
+            const isAuthRequest = String(input).startsWith('/api/auth/');
+            if (response.status === 401 && !isAuthRequest && authState.configured === true) {
+                openProfileSheet();
+                window.requestAnimationFrame(() => setAuthStatus('Your session has expired. Please sign in again.', 'error'));
+            }
             return response;
         }
 
@@ -4395,16 +4411,21 @@
             const isSignUp = authFormMode === 'sign-up';
             host.innerHTML = `
                 <form class="pt-auth-stack" onsubmit="submitAuth(event)">
-                    ${isSignUp ? '<input id="auth-full-name" type="text" maxlength="120" autocomplete="name" placeholder="Full name (optional)">' : ''}
-                    <input id="auth-email" type="email" autocomplete="email" placeholder="Email" required>
-                    <input id="auth-password" type="password" minlength="8" autocomplete="${isSignUp ? 'new-password' : 'current-password'}" placeholder="Password" required>
-                    ${isSignUp ? '<input id="auth-confirm-password" type="password" minlength="8" autocomplete="new-password" placeholder="Confirm password" required>' : ''}
+                    <p class="pt-auth-intro">${isSignUp ? 'Create your secure Quantora account. We will send a confirmation link to your email.' : 'Sign in to open your private, cloud-synced Quantora workspace.'}</p>
+                    <div class="pt-auth-mode-switch" role="tablist" aria-label="Authentication mode">
+                        <button type="button" class="${isSignUp ? '' : 'is-active'}" role="tab" aria-selected="${!isSignUp}" onclick="setAuthFormMode('sign-in')">Sign in</button>
+                        <button type="button" class="${isSignUp ? 'is-active' : ''}" role="tab" aria-selected="${isSignUp}" onclick="setAuthFormMode('sign-up')">Create account</button>
+                    </div>
+                    ${isSignUp ? '<label class="pt-auth-field"><span>Full name <em style="font-style:normal; color:#8491b8;">(optional)</em></span><input id="auth-full-name" type="text" maxlength="120" autocomplete="name" placeholder="e.g. Bas Trader"></label>' : ''}
+                    <label class="pt-auth-field"><span>Email</span><input id="auth-email" type="email" autocomplete="email" placeholder="you@example.com" required></label>
+                    <label class="pt-auth-field"><span>Password</span><input id="auth-password" type="password" minlength="8" autocomplete="${isSignUp ? 'new-password' : 'current-password'}" placeholder="At least 8 characters" required></label>
+                    ${isSignUp ? '<label class="pt-auth-field"><span>Confirm password</span><input id="auth-confirm-password" type="password" minlength="8" autocomplete="new-password" placeholder="Type your password again" required></label>' : ''}
                     ${isSignUp ? '' : '<label style="display:flex; align-items:center; gap:8px; color:var(--text-muted); font-size:12px;"><input id="auth-remember" type="checkbox" checked style="width:auto; min-height:auto;">Remember this device</label>'}
-                    <button type="submit" class="pt-auth-action">${isSignUp ? 'Create account' : 'Sign in'}</button>
-                    ${authState.googleEnabled ? '<button type="button" class="pt-auth-action secondary" onclick="signInWithGoogle()">Continue with Google</button>' : ''}
-                    <div class="pt-auth-links">
+                    <button id="auth-submit-button" type="submit" class="pt-auth-action">${isSignUp ? 'Create account' : 'Sign in'}</button>
+                    ${authState.googleEnabled ? '<div class="pt-auth-divider">or</div><button type="button" class="pt-auth-action secondary" onclick="signInWithGoogle()">Continue with Google</button>' : ''}
+                    <div id="auth-links" class="pt-auth-links">
                         <button type="button" onclick="setAuthFormMode('${isSignUp ? 'sign-in' : 'sign-up'}')">${isSignUp ? 'Already have an account?' : 'Create account'}</button>
-                        ${isSignUp ? '<button type="button" onclick="sendVerificationEmail()">Resend confirmation</button>' : ''}
+                        ${isSignUp ? '<button id="auth-resend-confirmation" type="button" onclick="sendVerificationEmail()">Resend confirmation</button>' : ''}
                         ${isSignUp ? '' : '<button type="button" onclick="sendPasswordReset()">Forgot password?</button>'}
                     </div>
                     <div id="profile-auth-status" class="pt-auth-status"></div>
@@ -4416,10 +4437,51 @@
             renderProfileAuthContent();
         }
 
+        function setAuthBusy(isBusy, label = '') {
+            const form = document.querySelector('#profile-auth-content form');
+            if (!form) return;
+            form.querySelectorAll('input, button').forEach(control => { control.disabled = Boolean(isBusy); });
+            const submit = document.getElementById('auth-submit-button');
+            if (submit) submit.textContent = isBusy ? (label || 'Working securely…') : (authFormMode === 'sign-up' ? 'Create account' : 'Sign in');
+        }
+
+        function showVerificationAction(email = '') {
+            authVerificationEmail = email || authVerificationEmail;
+            const links = document.getElementById('auth-links');
+            if (!links || document.getElementById('auth-resend-confirmation')) return;
+            const button = document.createElement('button');
+            button.id = 'auth-resend-confirmation';
+            button.type = 'button';
+            button.textContent = 'Resend confirmation';
+            button.addEventListener('click', sendVerificationEmail);
+            links.appendChild(button);
+        }
+
+        function authClientValidation(email, password, confirmation, isSignUp) {
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'กรุณากรอกอีเมลให้ถูกต้อง / Enter a valid email address.';
+            if (!password || password.length < 8) return 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร / Use at least 8 characters.';
+            if (isSignUp && password !== confirmation) return 'รหัสผ่านทั้งสองช่องไม่ตรงกัน / Password confirmation does not match.';
+            return '';
+        }
+
+        function friendlyAuthError(error, email = '') {
+            const raw = String(error?.message || error || 'Unable to complete authentication.');
+            const normalized = raw.toLowerCase();
+            if (/confirm|verify|not confirmed/.test(normalized)) {
+                showVerificationAction(email);
+                return 'กรุณายืนยันอีเมลก่อนเข้าสู่ระบบ แล้วกด Resend confirmation ได้หากยังไม่ได้รับอีเมล';
+            }
+            if (/already registered|already been registered|user already exists/.test(normalized)) return 'อีเมลนี้มีบัญชีอยู่แล้ว ลองเข้าสู่ระบบหรือรีเซ็ตรหัสผ่าน';
+            if (/invalid login|invalid credentials|password/.test(normalized)) return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+            if (/too many|rate limit|429/.test(normalized)) return 'ลองใหม่ภายหลังสักครู่ ระบบจำกัดจำนวนครั้งเพื่อความปลอดภัย';
+            if (/network|failed to fetch|temporarily unavailable/.test(normalized)) return 'เชื่อมต่อระบบไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
+            return raw;
+        }
+
         async function loadAuthSession() {
             const sessionEpoch = ++authSessionEpoch;
             try {
-                const res = await authFetch('/api/me', { cache: 'no-store' });
+                const res = await authFetch('/api/auth/me', { cache: 'no-store' });
                 if (sessionEpoch !== authSessionEpoch) return;
                 if (res.status === 404) {
                     authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
@@ -4475,12 +4537,14 @@
             const fullName = document.getElementById('auth-full-name')?.value.trim();
             const confirmation = document.getElementById('auth-confirm-password')?.value;
             const remember = Boolean(document.getElementById('auth-remember')?.checked);
-            if (authFormMode === 'sign-up' && password !== confirmation) {
-                setAuthStatus('Password confirmation does not match.', 'error');
+            const clientError = authClientValidation(email, password, confirmation, authFormMode === 'sign-up');
+            if (clientError) {
+                setAuthStatus(clientError, 'error');
                 return;
             }
             const endpoint = authFormMode === 'sign-up' ? '/api/auth/sign-up' : '/api/auth/sign-in';
             setAuthStatus('Working securely…');
+            setAuthBusy(true);
             try {
                 const res = await authFetch(endpoint, {
                     method: 'POST',
@@ -4491,13 +4555,18 @@
                 const data = await res.json().catch(() => ({}));
                 if (!res.ok) throw new Error(data.detail || data.message || 'Unable to complete authentication.');
                 if (authFormMode === 'sign-up' && !data.authenticated) {
+                    authVerificationEmail = email;
+                    showVerificationAction(email);
                     setAuthStatus(data.message || 'Check your email to confirm the account.', 'success');
                     return;
                 }
                 await loadAuthSession();
                 renderProfileAuthContent();
+                if (authState.authenticated && authState.user && !(authState.user.needs_onboarding || !authState.user.username)) closeProfileSheet();
             } catch (err) {
-                setAuthStatus(err.message || 'Unable to complete authentication.', 'error');
+                setAuthStatus(friendlyAuthError(err, email), 'error');
+            } finally {
+                setAuthBusy(false);
             }
         }
 
@@ -4512,6 +4581,7 @@
                 return;
             }
             setAuthStatus('Sending reset email…');
+            setAuthBusy(true, 'Sending…');
             try {
                 const res = await authFetch('/api/auth/forgot-password', {
                     method: 'POST', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ email })
@@ -4520,17 +4590,20 @@
                 if (!res.ok) throw new Error(data.detail || data.message || 'Unable to send reset email.');
                 setAuthStatus(data.message || 'If this address exists, a reset link is on its way.', 'success');
             } catch (err) {
-                setAuthStatus(err.message || 'Unable to send reset email.', 'error');
+                setAuthStatus(friendlyAuthError(err, email), 'error');
+            } finally {
+                setAuthBusy(false);
             }
         }
 
         async function sendVerificationEmail() {
-            const email = document.getElementById('auth-email')?.value.trim();
+            const email = document.getElementById('auth-email')?.value.trim() || authVerificationEmail;
             if (!email) {
                 setAuthStatus('Enter your email first, then request a confirmation link.', 'error');
                 return;
             }
             setAuthStatus('Sending confirmation email…');
+            setAuthBusy(true, 'Sending…');
             try {
                 const res = await authFetch('/api/auth/verify-email', {
                     method: 'POST', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ email })
@@ -4539,7 +4612,9 @@
                 if (!res.ok) throw new Error(data.detail || data.message || 'Unable to send confirmation email.');
                 setAuthStatus(data.message || 'If this address needs confirmation, a new link is on its way.', 'success');
             } catch (err) {
-                setAuthStatus(err.message || 'Unable to send confirmation email.', 'error');
+                setAuthStatus(friendlyAuthError(err, email), 'error');
+            } finally {
+                setAuthBusy(false);
             }
         }
 
@@ -4564,7 +4639,7 @@
 
         async function signOut() {
             try {
-                await authFetch('/api/auth/sign-out', { method: 'POST', headers: authHeaders(true) });
+                await authFetch('/api/auth/logout', { method: 'POST', headers: authHeaders(true) });
             } finally {
                 authSessionEpoch += 1;
                 authState = { configured: authState.configured, authenticated: false, user: null, googleEnabled: authState.googleEnabled, cloudSyncEnabled: false, csrfToken: null, recoveryMode: false };
