@@ -199,8 +199,9 @@ returns `401`; it never uses `localStorage` for credentials or tokens.
 6. Confirm `/healthz`, `/readyz`, an email sign-in, cloud watchlist creation,
    and a WebSocket price update before inviting users.
 
-GitHub Actions validates Python compilation/import/tests plus the exact inline
-JavaScript mirror whenever you push or open a pull request.
+GitHub Actions validates Python compilation, release configuration, unit/API
+tests, dependency vulnerabilities, frontend route smoke tests, and syntax/lint
+checks whenever you push or open a pull request.
 
 ## Render plan and realtime note
 

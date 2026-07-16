@@ -15,6 +15,7 @@ import re
 import ipaddress
 import hmac
 import threading
+import uuid
 from datetime import date, datetime, time as dtime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Optional, Literal
@@ -23,7 +24,7 @@ from zoneinfo import ZoneInfo
 import yfinance as yf
 import pandas as pd
 from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 # --- JSON safety helpers ------------------------------------------------
 
@@ -76,6 +77,7 @@ from calculator_engine import (
 )
 from market_catalog import (
     MARKET_CATALOG,
+    get_instrument,
     list_categories,
     list_instruments_by_category,
     search_instruments,
@@ -138,13 +140,19 @@ from app.cloud_service import (
     remove_watchlist_item,
     profile_payload,
     rename_portfolio,
+    record_stock_trade,
     reorder_watchlist_items,
     remove_default_watchlist_ticker,
     update_option_position,
+    update_stock_holding_notes,
     update_watchlist,
     update_preferences,
     watchlist_item_payload,
     watchlist_payload,
+    list_stock_holdings,
+    list_stock_transactions,
+    stock_holding_payload,
+    stock_transaction_payload,
 )
 from app.alert_service import (
     AlertResourceNotFoundError,
@@ -171,6 +179,9 @@ BASE_DIR = Path(__file__).resolve().parent
 INDEX_FILE = BASE_DIR / "index.html"
 MANIFEST_FILE = BASE_DIR / "app.webmanifest"
 SERVICE_WORKER_FILE = BASE_DIR / "service-worker.js"
+FRONTEND_ROUTE_DIR = BASE_DIR / "frontend" / "routes"
+FRONTEND_ROUTE_MODULES = frozenset({"home", "watchlist", "analysis", "tools", "portfolio", "search"})
+FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI()
 logger = logging.getLogger("portfolio_terminal")
@@ -244,7 +255,7 @@ async def safe_request_validation_error(request: Request, exc: RequestValidation
 @app.exception_handler(OperationalError)
 async def safe_database_operational_error(request: Request, exc: OperationalError):
     """Return a retryable response without leaking database topology."""
-    logger.exception("Database operation failed on %s", request.url.path)
+    logger.exception("Database operation failed request_id=%s path=%s", getattr(request.state, "request_id", "-"), request.url.path)
     return JSONResponse(
         status_code=503,
         content={"detail": "Cloud storage is temporarily unavailable. Please retry."},
@@ -255,7 +266,7 @@ async def safe_database_operational_error(request: Request, exc: OperationalErro
 @app.exception_handler(SQLAlchemyError)
 async def safe_database_error(request: Request, exc: SQLAlchemyError):
     """Keep schema/query failures from becoming non-JSON 500 responses."""
-    logger.exception("Database request failed on %s", request.url.path)
+    logger.exception("Database request failed request_id=%s path=%s", getattr(request.state, "request_id", "-"), request.url.path)
     return JSONResponse(
         status_code=503,
         content={"detail": "Cloud storage is temporarily unavailable. Please retry."},
@@ -266,7 +277,7 @@ async def safe_database_error(request: Request, exc: SQLAlchemyError):
 @app.exception_handler(Exception)
 async def safe_unexpected_error(request: Request, exc: Exception):
     """Last-resort JSON response for API failures, with server-side traceback logging."""
-    logger.exception("Unhandled request failure method=%s path=%s", request.method, request.url.path)
+    logger.exception("Unhandled request failure request_id=%s method=%s path=%s", getattr(request.state, "request_id", "-"), request.method, request.url.path)
     return JSONResponse(
         status_code=503,
         content={"detail": "The service is temporarily unavailable. Please retry."},
@@ -277,6 +288,8 @@ async def safe_unexpected_error(request: Request, exc: Exception):
 @app.middleware("http")
 async def add_security_headers(request: Request, call_next):
     """Apply browser hardening without changing legacy API payloads."""
+    supplied_request_id = request.headers.get("X-Request-ID", "").strip()
+    request.state.request_id = supplied_request_id if re.fullmatch(r"[A-Za-z0-9._-]{8,128}", supplied_request_id) else uuid.uuid4().hex
     rate_limit_response: JSONResponse | None = None
     if request.url.path in AUTH_RATE_LIMIT_PATHS:
         allowed, retry_after = auth_rate_limiter.allow(
@@ -320,6 +333,7 @@ async def add_security_headers(request: Request, call_next):
         else await call_next(request)
     )
     response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Request-ID", request.state.request_id)
     response.headers.setdefault("X-Frame-Options", "DENY")
     response.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
     response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=()")
@@ -328,11 +342,12 @@ async def add_security_headers(request: Request, call_next):
         response.headers.setdefault("Strict-Transport-Security", "max-age=31536000; includeSubDomains")
     response.headers.setdefault(
         "Content-Security-Policy",
-        "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; "
+        "default-src 'self'; script-src 'self' https://unpkg.com; script-src-attr 'unsafe-inline'; "
         "style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com https://*.googleusercontent.com; font-src 'self' data:; "
-        "connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; "
+        "connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; "
         "frame-ancestors 'none'; form-action 'self'",
     )
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
     if request.url.path == "/api/quote":
         response.headers["Cache-Control"] = "no-store, max-age=0"
     private_prefixes = (
@@ -600,6 +615,32 @@ class PortfolioRenameModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     name: str = Field(min_length=1, max_length=80)
+    currency: Optional[str] = Field(default=None, min_length=3, max_length=3)
+
+
+class StockTradeModel(BaseModel):
+    """A stock buy or sell recorded against a selected cloud portfolio."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    portfolio_id: int = Field(gt=0)
+    ticker: str = Field(min_length=1, max_length=12)
+    side: Literal["BUY", "SELL"]
+    shares: float = Field(gt=0, le=1_000_000_000)
+    price: float = Field(ge=0, le=100_000_000)
+    notes: Optional[str] = Field(default=None, max_length=4_000)
+    traded_at: Optional[str] = Field(default=None, max_length=10)
+
+    @field_validator("ticker")
+    @classmethod
+    def validate_ticker(cls, value: str) -> str:
+        return normalize_ticker(value)
+
+
+class StockHoldingNotesModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    notes: Optional[str] = Field(default=None, max_length=4_000)
 
 
 class WatchlistCreateModel(BaseModel):
@@ -731,8 +772,8 @@ def send_line_alert(message: str):
     data = {"message": message}
     try:
         requests.post(url, headers=headers, data=data, timeout=10)
-    except Exception as e:
-        print(f"LINE Notify Error: {e}")
+    except Exception:
+        logger.warning("LINE notification request failed")
 
 
 def get_runtime_auth_settings():
@@ -1556,12 +1597,6 @@ def estimate_eta(distance: float, atr, bar_seconds: int):
 # ---------------------------------------------------------------------------
 # 📦 API Endpoints
 # ---------------------------------------------------------------------------
-TICKERS_DB = [
-    {"symbol": "AAPL", "name": "Apple Inc."}, {"symbol": "MSFT", "name": "Microsoft Corp."},
-    {"symbol": "GOOGL", "name": "Alphabet Inc. Class A"}, {"symbol": "NVDA", "name": "NVIDIA Corp."},
-    {"symbol": "TSLA", "name": "Tesla Inc."}, {"symbol": "AMD", "name": "Advanced Micro Devices"}
-]
-
 @app.get("/")
 async def serve_home():
     return FileResponse(INDEX_FILE)
@@ -1580,6 +1615,37 @@ async def serve_service_worker():
         SERVICE_WORKER_FILE,
         media_type="application/javascript",
         headers={"Cache-Control": "no-cache"},
+    )
+
+
+@app.get("/assets/routes/{route_name}.js", include_in_schema=False)
+async def serve_route_module(route_name: str):
+    """Serve an allow-listed native ES-module route chunk."""
+
+    if route_name not in FRONTEND_ROUTE_MODULES:
+        raise HTTPException(status_code=404, detail="Frontend route module not found.")
+    return FileResponse(
+        FRONTEND_ROUTE_DIR / f"{route_name}.js",
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=300"},
+    )
+
+
+@app.get("/assets/{asset_path:path}", include_in_schema=False)
+async def serve_frontend_asset(asset_path: str):
+    """Serve frontend chunks without exposing paths outside frontend/."""
+
+    requested = (FRONTEND_DIR / asset_path).resolve()
+    try:
+        requested.relative_to(FRONTEND_DIR.resolve())
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Frontend asset not found.")
+    if requested.suffix != ".js" or not requested.is_file():
+        raise HTTPException(status_code=404, detail="Frontend asset not found.")
+    return FileResponse(
+        requested,
+        media_type="application/javascript",
+        headers={"Cache-Control": "public, max-age=300"},
     )
 
 
@@ -2158,6 +2224,63 @@ def post_search_history(payload: ActivityTickerModel, request: Request, response
         return {"item": _activity_payload(item, timestamp_field="last_searched_at")}
 
 
+@app.get("/api/search-analytics")
+def get_search_analytics(request: Request, response: Response):
+    """Return private aggregate counts for the signed-in user's searches."""
+
+    user = require_cloud_user(request, response)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        total_searches = session.scalar(
+            select(func.coalesce(func.sum(SearchHistory.search_count), 0)).where(SearchHistory.profile_id == user.id)
+        )
+        unique_symbols = session.scalar(
+            select(func.count(SearchHistory.id)).where(SearchHistory.profile_id == user.id)
+        )
+        last_searched_at = session.scalar(
+            select(func.max(SearchHistory.last_searched_at)).where(SearchHistory.profile_id == user.id)
+        )
+        return {
+            "total_searches": int(total_searches or 0),
+            "unique_symbols": int(unique_symbols or 0),
+            "last_searched_at": last_searched_at.isoformat() if last_searched_at else None,
+        }
+
+
+@app.get("/api/search-analytics/trending")
+def get_trending_searches(request: Request, response: Response, limit: int = Query(8, ge=1, le=20)):
+    """Return anonymous, catalog-enriched aggregate search trends.
+
+    The endpoint exposes no profile IDs, queries, or per-user activity. It is
+    intentionally backed by the existing durable search history table, so no
+    additional analytics event stream or browser tracking is required.
+    """
+
+    user = require_cloud_user(request, response)
+    with session_scope() as session:
+        ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+        searches = func.sum(SearchHistory.search_count).label("searches")
+        last_searched_at = func.max(SearchHistory.last_searched_at).label("last_searched_at")
+        rows = session.execute(
+            select(SearchHistory.ticker, searches, last_searched_at)
+            .group_by(SearchHistory.ticker)
+            .order_by(searches.desc(), last_searched_at.desc(), SearchHistory.ticker.asc())
+            .limit(limit)
+        ).all()
+        items = []
+        for ticker, count, searched_at in rows:
+            instrument = get_instrument(ticker)
+            item = {
+                "ticker": ticker,
+                "count": int(count or 0),
+                "last_searched_at": searched_at.isoformat() if searched_at else None,
+            }
+            if instrument is not None:
+                item.update(instrument.as_dict())
+            items.append(item)
+        return {"items": items}
+
+
 @app.get("/api/recent-viewed")
 def get_recent_viewed(request: Request, response: Response, limit: int = Query(20, ge=1, le=100)):
     user = require_cloud_user(request, response)
@@ -2476,7 +2599,7 @@ def patch_portfolio(
         with session_scope() as session:
             ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
             item = rename_portfolio(
-                session, profile_id=user.id, portfolio_id=portfolio_id, name=payload.name
+                session, profile_id=user.id, portfolio_id=portfolio_id, name=payload.name, currency=payload.currency
             )
             return {"portfolio": portfolio_payload(item)}
     except IntegrityError as exc:
@@ -2494,6 +2617,222 @@ def delete_portfolio(portfolio_id: int, request: Request, response: Response):
             ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
             item = archive_portfolio(session, profile_id=user.id, portfolio_id=portfolio_id)
             return {"portfolio": portfolio_payload(item)}
+    except (CloudServiceValidationError, CloudResourceNotFoundError, DefaultResourceProtectionError) as exc:
+        raise_cloud_service_error(exc)
+
+
+def _stock_holding_live_price(holding) -> float | None:
+    """Fetch a live quote without materializing holding transaction history."""
+
+    current_price: float | None = None
+    try:
+        quote = float(get_base_price(holding.ticker))
+        if math.isfinite(quote) and quote >= 0:
+            current_price = quote
+    except (RuntimeError, ValueError, TypeError):
+        logger.info("Stock portfolio quote unavailable for %s", holding.ticker)
+    return current_price
+
+
+def _stock_holding_with_live_price(holding) -> dict[str, Any]:
+    """Attach a live quote when available without inventing a valuation."""
+
+    return stock_holding_payload(holding, current_price=_stock_holding_live_price(holding))
+
+
+@app.get("/api/portfolio/stocks")
+def get_stock_portfolio(
+    request: Request,
+    response: Response,
+    portfolio_id: Optional[int] = Query(default=None, gt=0),
+    include_closed: bool = False,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=50, ge=1, le=100),
+):
+    """Return one incremental page of stock holdings.
+
+    Request one extra row so clients can append pages without loading every
+    holding or its live quote up front.
+    """
+
+    user = require_cloud_user(request, response)
+    try:
+        with session_scope() as session:
+            ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+            holdings = list_stock_holdings(
+                session,
+                profile_id=user.id,
+                portfolio_id=portfolio_id,
+                include_closed=include_closed,
+                offset=offset,
+                limit=limit + 1,
+            )
+            has_more = len(holdings) > limit
+            page = holdings[:limit]
+            return {
+                "items": [_stock_holding_with_live_price(holding) for holding in page],
+                "offset": offset,
+                "next_offset": offset + len(page) if has_more else None,
+                "has_more": has_more,
+            }
+    except (CloudServiceValidationError, CloudResourceNotFoundError, DefaultResourceProtectionError) as exc:
+        raise_cloud_service_error(exc)
+
+
+@app.get("/api/portfolio/stocks/summary")
+def get_stock_portfolio_summary(
+    request: Request, response: Response, portfolio_id: Optional[int] = Query(default=None, gt=0)
+):
+    """Return cached-client-friendly stock totals without option enrichment."""
+
+    user = require_cloud_user(request, response)
+    try:
+        with session_scope() as session:
+            ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+            portfolios = list_portfolios(session, profile_id=user.id)
+            if portfolio_id is not None:
+                portfolios = [item for item in portfolios if item.id == portfolio_id]
+                if not portfolios:
+                    raise CloudResourceNotFoundError("portfolio not found")
+            items: list[dict[str, Any]] = []
+            for portfolio in portfolios:
+                holdings = list_stock_holdings(session, profile_id=user.id, portfolio_id=int(portfolio.id))
+                all_holdings = list_stock_holdings(
+                    session, profile_id=user.id, portfolio_id=int(portfolio.id), include_closed=True
+                )
+                market_values: list[float] = []
+                unrealized_values: list[float] = []
+                for holding in holdings:
+                    live_price = _stock_holding_live_price(holding)
+                    if live_price is None:
+                        continue
+                    shares = float(holding.shares)
+                    market_values.append(live_price * shares)
+                    unrealized_values.append((live_price - float(holding.average_cost)) * shares)
+                realized_pnl = sum(float(holding.realized_pnl) for holding in all_holdings)
+                unrealized_pnl = sum(unrealized_values) if len(unrealized_values) == len(holdings) else None
+                total_pnl = (
+                    realized_pnl
+                    if not holdings
+                    else (unrealized_pnl + realized_pnl if unrealized_pnl is not None else None)
+                )
+                items.append({
+                    **portfolio_payload(portfolio),
+                    "holding_count": len(holdings),
+                    "stock_value": sum(market_values) if len(market_values) == len(holdings) else None,
+                    "unrealized_pnl": unrealized_pnl,
+                    "realized_pnl": realized_pnl,
+                    "total_pnl": total_pnl,
+                })
+            return {"items": items}
+    except (CloudServiceValidationError, CloudResourceNotFoundError, DefaultResourceProtectionError) as exc:
+        raise_cloud_service_error(exc)
+
+
+@app.post("/api/portfolio/stocks/trades")
+def post_stock_trade(payload: StockTradeModel, request: Request, response: Response):
+    user = require_cloud_user(request, response, mutate=True)
+    try:
+        with session_scope() as session:
+            ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+            holding = record_stock_trade(
+                session, profile_id=user.id, portfolio_id=payload.portfolio_id,
+                ticker=payload.ticker, side=payload.side, shares=payload.shares,
+                price=payload.price, notes=payload.notes, traded_at=payload.traded_at,
+            )
+            return {"holding": _stock_holding_with_live_price(holding)}
+    except (CloudServiceValidationError, CloudResourceNotFoundError, DefaultResourceProtectionError) as exc:
+        raise_cloud_service_error(exc)
+
+
+@app.patch("/api/portfolio/stocks/{holding_id}")
+def patch_stock_holding(
+    holding_id: int, payload: StockHoldingNotesModel, request: Request, response: Response
+):
+    user = require_cloud_user(request, response, mutate=True)
+    try:
+        with session_scope() as session:
+            ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+            holding = update_stock_holding_notes(
+                session, profile_id=user.id, holding_id=holding_id, notes=payload.notes
+            )
+            if holding is None:
+                raise HTTPException(status_code=404, detail="Stock holding not found.")
+            return {"holding": _stock_holding_with_live_price(holding)}
+    except (CloudServiceValidationError, CloudResourceNotFoundError, DefaultResourceProtectionError) as exc:
+        raise_cloud_service_error(exc)
+
+
+@app.get("/api/portfolio/transactions")
+def get_portfolio_transactions(
+    request: Request, response: Response, portfolio_id: Optional[int] = Query(default=None, gt=0)
+):
+    user = require_cloud_user(request, response)
+    try:
+        with session_scope() as session:
+            ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+            items = list_stock_transactions(session, profile_id=user.id, portfolio_id=portfolio_id)
+            return {"items": [stock_transaction_payload(item) for item in items]}
+    except (CloudServiceValidationError, CloudResourceNotFoundError, DefaultResourceProtectionError) as exc:
+        raise_cloud_service_error(exc)
+
+
+@app.get("/api/portfolio/overview")
+def get_portfolio_overview(
+    request: Request, response: Response, portfolio_id: Optional[int] = Query(default=None, gt=0)
+):
+    """Portfolio-level realized/unrealized P&L and current value.
+
+    Values are returned per portfolio to avoid silently adding different
+    currencies together.  A currency-group total is provided only for values
+    already denominated in the same currency.
+    """
+
+    user = require_cloud_user(request, response)
+    try:
+        with session_scope() as session:
+            ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
+            portfolios = list_portfolios(session, profile_id=user.id)
+            if portfolio_id is not None:
+                portfolios = [item for item in portfolios if item.id == portfolio_id]
+                if not portfolios:
+                    raise CloudResourceNotFoundError("portfolio not found")
+            items: list[dict[str, Any]] = []
+            currency_totals: dict[str, dict[str, float]] = {}
+            for portfolio in portfolios:
+                stock_items = [
+                    _stock_holding_with_live_price(holding)
+                    for holding in list_stock_holdings(session, profile_id=user.id, portfolio_id=int(portfolio.id))
+                ]
+                realized_stock = sum(float(item["realized_pnl"]) for item in stock_items)
+                unrealized_stock = sum(float(item["unrealized_pnl"]) for item in stock_items if item["unrealized_pnl"] is not None)
+                stock_value = sum(float(item["market_value"]) for item in stock_items if item["market_value"] is not None)
+                option_positions = [
+                    enrich_option_position(legacy_position_payload(position))
+                    for position in list_open_option_positions(session, user.id, int(portfolio.id))
+                ]
+                option_cost = sum(
+                    float(item["premium_paid"]) * float(item["quantity"]) * 100
+                    for item in option_positions
+                )
+                option_unrealized = sum(
+                    float(item["pnl"]) for item in option_positions if isinstance(item.get("pnl"), (int, float))
+                )
+                total_value = stock_value + option_cost + option_unrealized
+                unrealized = unrealized_stock + option_unrealized
+                item = {
+                    **portfolio_payload(portfolio), "holding_count": len(stock_items),
+                    "option_position_count": len(option_positions), "realized_pnl": realized_stock,
+                    "unrealized_pnl": unrealized, "total_value": total_value,
+                    "stock_value": stock_value, "options_value": option_cost + option_unrealized,
+                }
+                items.append(item)
+                totals = currency_totals.setdefault(portfolio.currency, {
+                    "realized_pnl": 0.0, "unrealized_pnl": 0.0, "total_value": 0.0,
+                })
+                for key in totals:
+                    totals[key] += float(item[key])
+            return {"items": items, "currency_totals": currency_totals}
     except (CloudServiceValidationError, CloudResourceNotFoundError, DefaultResourceProtectionError) as exc:
         raise_cloud_service_error(exc)
 

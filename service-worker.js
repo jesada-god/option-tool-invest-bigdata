@@ -2,11 +2,39 @@
    are intentionally never stored by this worker. */
 // Bump this whenever the application shell changes so an older offline page
 // cannot mask a newly deployed UI after the worker activates.
-const CACHE_NAME = 'quantora-shell-v2';
-const SHELL = ['/'];
+const CACHE_NAME = 'quantora-shell-v5';
+const SHELL = [
+  '/', '/app.webmanifest', '/assets/app-shell.js',
+  '/assets/utils/load-classic.js',
+  '/assets/components/indicators.js',
+  '/assets/api/resilience.js', '/assets/api/cache.js', '/assets/api/auth.js',
+  '/assets/state/store.js', '/assets/state/app.js', '/assets/state/auth.js',
+  '/assets/state/session.js', '/assets/state/market.js', '/assets/state/portfolio.js',
+  '/assets/state/watchlist.js', '/assets/state/search.js', '/assets/state/analysis.js',
+  '/assets/state/preferences.js', '/assets/state/notifications.js', '/assets/state/legacy-bridge.js',
+  '/assets/app-shell/storage.js', '/assets/app-shell/router.js', '/assets/app-shell/auth.js',
+  '/assets/app-shell/navigation.js', '/assets/app-shell/profile.js', '/assets/app-shell/theme.js',
+  '/assets/app-shell/workspace.js', '/assets/app-shell/preferences.js', '/assets/app-shell/feedback.js',
+  '/assets/app-shell/notifications.js', '/assets/app-shell/session.js', '/assets/app-shell/interaction.js',
+  '/assets/app-shell/accessibility.js', '/assets/app-shell/boot.js',
+  '/assets/routes/home.js', '/assets/routes/watchlist.js', '/assets/routes/search.js',
+  '/assets/routes/analysis.js', '/assets/routes/tools.js', '/assets/routes/portfolio.js',
+  '/assets/pages/home.js', '/assets/pages/watchlist.js', '/assets/pages/tools.js',
+  '/assets/analysis/market-terminal.js', '/assets/analysis/gauges.js', '/assets/analysis/advanced-simulator.js',
+  '/assets/portfolio/terminal.js',
+  '/assets/services/live-price.js',
+];
+const REMOTE_SHELL_ASSETS = [
+  'https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js',
+];
 
 self.addEventListener('install', event => {
-  event.waitUntil(caches.open(CACHE_NAME).then(cache => cache.addAll(SHELL)));
+  event.waitUntil(caches.open(CACHE_NAME).then(async cache => {
+    await cache.addAll(SHELL);
+    // This non-essential chart dependency is cached opportunistically: its
+    // CDN being unavailable must never prevent the shell from activating.
+    await Promise.all(REMOTE_SHELL_ASSETS.map(asset => cache.add(asset).catch(() => undefined)));
+  }));
   self.skipWaiting();
 });
 
@@ -18,7 +46,32 @@ self.addEventListener('activate', event => {
 });
 
 self.addEventListener('fetch', event => {
-  if (event.request.method !== 'GET' || new URL(event.request.url).origin !== self.location.origin) return;
-  if (new URL(event.request.url).pathname.startsWith('/api/')) return;
-  event.respondWith(fetch(event.request).catch(() => caches.match(event.request)));
+  const url = new URL(event.request.url);
+  if (event.request.method !== 'GET') return;
+  if (url.pathname.startsWith('/api/')) return;
+  event.respondWith((async () => {
+    const isShellAsset = (url.origin === self.location.origin && (url.pathname === '/' || url.pathname === '/app.webmanifest' || url.pathname.startsWith('/assets/')))
+      || REMOTE_SHELL_ASSETS.includes(url.href);
+    // The shell is revisioned with CACHE_NAME, so cache-first avoids a
+    // network round-trip for each route module without serving stale deploys.
+    if (isShellAsset) {
+      const cached = await caches.match(event.request);
+      if (cached) return cached;
+    }
+    try {
+      const response = await fetch(event.request);
+      // Keep static assets available after their first successful load. This
+      // covers future shell modules without ever caching market or account data.
+      if (isShellAsset && response.ok) {
+        const cache = await caches.open(CACHE_NAME);
+        await cache.put(event.request, response.clone());
+      }
+      return response;
+    } catch (_) {
+      const cached = await caches.match(event.request);
+      if (cached) return cached;
+      if (url.origin === self.location.origin) return (await caches.match('/'));
+      throw _;
+    }
+  })());
 });

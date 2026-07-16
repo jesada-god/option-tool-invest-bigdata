@@ -18,7 +18,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from .models import Portfolio, Position, Profile, UserPreference, Watchlist, WatchlistItem
+from .models import (
+    Portfolio, Position, Profile, StockHolding, StockTransaction,
+    UserPreference, Watchlist, WatchlistItem,
+)
 from .repositories import PortfolioRepository, ProfileRepository, WatchlistRepository
 
 
@@ -27,6 +30,7 @@ from .repositories import PortfolioRepository, ProfileRepository, WatchlistRepos
 # a route is added outside Pydantic/FastAPI later.
 MAX_RESOURCE_NAME_LENGTH = 80
 MAX_WATCHLIST_TICKER_LENGTH = 12
+MAX_STOCK_NOTES_LENGTH = 4_000
 MAX_SORT_ORDER = 2_147_483_647
 _WATCHLIST_TICKER_PATTERN = re.compile(
     rf"^[A-Z0-9][A-Z0-9.\-]{{0,{MAX_WATCHLIST_TICKER_LENGTH - 1}}}$"
@@ -83,6 +87,21 @@ def normalize_watchlist_ticker(value: str) -> str:
             "ticker must be 1-12 uppercase letters, digits, dots, or hyphens"
         )
     return normalized
+
+
+def normalize_stock_notes(value: str | None) -> str | None:
+    """Keep optional holding and trade notes compact and display-safe."""
+
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise CloudServiceValidationError("notes must be text")
+    normalized = value.strip()
+    if len(normalized) > MAX_STOCK_NOTES_LENGTH:
+        raise CloudServiceValidationError(f"notes must be at most {MAX_STOCK_NOTES_LENGTH} characters")
+    if any(ord(character) < 32 and character not in "\n\t" for character in normalized):
+        raise CloudServiceValidationError("notes cannot contain control characters")
+    return normalized or None
 
 
 def normalize_portfolio_currency(value: str) -> str:
@@ -382,8 +401,9 @@ def rename_portfolio(
     profile_id: uuid.UUID,
     portfolio_id: int,
     name: str,
+    currency: str | None = None,
 ) -> Portfolio:
-    """Rename an active portfolio after proving profile ownership."""
+    """Update an active portfolio after proving profile ownership."""
 
     portfolio = _portfolio_for_profile(session, profile_id=profile_id, portfolio_id=portfolio_id)
     if portfolio.archived_at is not None:
@@ -399,6 +419,8 @@ def rename_portfolio(
     if conflicting_id is not None:
         raise CloudServiceValidationError("a portfolio with this name already exists")
     portfolio.name = normalized_name
+    if currency is not None:
+        portfolio.currency = normalize_portfolio_currency(currency)
     session.flush()
     return portfolio
 
@@ -726,19 +748,23 @@ def create_option_position(
     return position
 
 
-def list_open_option_positions(session: Session, profile_id: uuid.UUID) -> list[Position]:
-    return list(
-        session.scalars(
-            select(Position)
-            .join(Portfolio, Position.portfolio_id == Portfolio.id)
-            .where(
-                Portfolio.profile_id == profile_id,
-                Position.is_open.is_(True),
-                Position.asset_type == "option",
-            )
-            .order_by(Position.opened_at.desc(), Position.id.desc())
+def list_open_option_positions(
+    session: Session, profile_id: uuid.UUID, portfolio_id: int | None = None
+) -> list[Position]:
+    statement = (
+        select(Position)
+        .join(Portfolio, Position.portfolio_id == Portfolio.id)
+        .where(
+            Portfolio.profile_id == profile_id,
+            Position.is_open.is_(True),
+            Position.asset_type == "option",
         )
+        .order_by(Position.opened_at.desc(), Position.id.desc())
     )
+    if portfolio_id is not None:
+        portfolio = _portfolio_for_profile(session, profile_id=profile_id, portfolio_id=portfolio_id)
+        statement = statement.where(Position.portfolio_id == portfolio.id)
+    return list(session.scalars(statement))
 
 
 def close_option_position(session: Session, *, profile_id: uuid.UUID, position_id: int) -> Position | None:
@@ -798,11 +824,212 @@ def update_option_position(
     return position
 
 
+def _stock_holding_for_profile(
+    session: Session, *, profile_id: uuid.UUID, holding_id: int
+) -> StockHolding | None:
+    if isinstance(holding_id, bool) or not isinstance(holding_id, int) or holding_id <= 0:
+        raise CloudServiceValidationError("holding_id must be a positive integer")
+    return session.scalar(
+        select(StockHolding)
+        .join(Portfolio, StockHolding.portfolio_id == Portfolio.id)
+        .where(StockHolding.id == holding_id, Portfolio.profile_id == profile_id)
+    )
+
+
+def _trade_date(value: str | None) -> date:
+    if value is None:
+        return date.today()
+    try:
+        return date.fromisoformat(value)
+    except (TypeError, ValueError) as exc:
+        raise CloudServiceValidationError("traded_at must be YYYY-MM-DD") from exc
+
+
+def record_stock_trade(
+    session: Session,
+    *,
+    profile_id: uuid.UUID,
+    portfolio_id: int,
+    ticker: str,
+    side: str,
+    shares: float,
+    price: float,
+    notes: str | None = None,
+    traded_at: str | None = None,
+) -> StockHolding:
+    """Record a buy/sell and atomically update its holding projection.
+
+    Average cost uses a weighted-average method.  A sale preserves the
+    holding (including a zero-share holding) so the complete trade history and
+    realized P&L stay available in transaction history.
+    """
+
+    portfolio = _portfolio_for_profile(session, profile_id=profile_id, portfolio_id=portfolio_id)
+    if portfolio.archived_at is not None:
+        raise CloudServiceValidationError("cannot trade in an archived portfolio")
+    symbol = normalize_watchlist_ticker(ticker)
+    normalized_side = str(side or "").upper().strip()
+    if normalized_side not in {"BUY", "SELL"}:
+        raise CloudServiceValidationError("side must be BUY or SELL")
+    try:
+        quantity = _decimal(shares, "shares")
+        unit_price = _decimal(price, "price")
+    except ValueError as exc:
+        raise CloudServiceValidationError(str(exc)) from exc
+    if quantity <= 0:
+        raise CloudServiceValidationError("shares must be greater than 0")
+    if unit_price < 0:
+        raise CloudServiceValidationError("price must be at least 0")
+    trade_notes = normalize_stock_notes(notes)
+
+    holding = session.scalar(
+        select(StockHolding).where(
+            StockHolding.portfolio_id == portfolio.id,
+            StockHolding.ticker == symbol,
+        )
+    )
+    if holding is None:
+        if normalized_side == "SELL":
+            raise CloudServiceValidationError("cannot sell a stock that is not held in this portfolio")
+        holding = StockHolding(
+            portfolio_id=portfolio.id,
+            ticker=symbol,
+            shares=Decimal("0"),
+            average_cost=Decimal("0"),
+            realized_pnl=Decimal("0"),
+            notes=trade_notes,
+        )
+        session.add(holding)
+        session.flush()
+    elif trade_notes is not None:
+        # Trade notes are historical; an explicit note also remains visible on
+        # the holding as the user-facing current note.
+        holding.notes = trade_notes
+
+    if normalized_side == "BUY":
+        new_shares = holding.shares + quantity
+        holding.average_cost = ((holding.shares * holding.average_cost) + (quantity * unit_price)) / new_shares
+        holding.shares = new_shares
+    else:
+        if quantity > holding.shares:
+            raise CloudServiceValidationError("sell shares cannot exceed the current holding")
+        holding.realized_pnl = holding.realized_pnl + ((unit_price - holding.average_cost) * quantity)
+        holding.shares = holding.shares - quantity
+
+    transaction = StockTransaction(
+        holding_id=holding.id,
+        side=normalized_side,
+        shares=quantity,
+        price=unit_price,
+        notes=trade_notes,
+        traded_at=_trade_date(traded_at),
+    )
+    session.add(transaction)
+    session.flush()
+    return holding
+
+
+def update_stock_holding_notes(
+    session: Session, *, profile_id: uuid.UUID, holding_id: int, notes: str | None
+) -> StockHolding | None:
+    holding = _stock_holding_for_profile(session, profile_id=profile_id, holding_id=holding_id)
+    if holding is None:
+        return None
+    if holding.portfolio.archived_at is not None:
+        raise CloudServiceValidationError("cannot update a holding in an archived portfolio")
+    holding.notes = normalize_stock_notes(notes)
+    session.flush()
+    return holding
+
+
+def list_stock_holdings(
+    session: Session,
+    *,
+    profile_id: uuid.UUID,
+    portfolio_id: int | None = None,
+    include_closed: bool = False,
+    offset: int | None = None,
+    limit: int | None = None,
+) -> list[StockHolding]:
+    statement = (
+        select(StockHolding)
+        .join(Portfolio, StockHolding.portfolio_id == Portfolio.id)
+        .where(Portfolio.profile_id == profile_id)
+        .order_by(StockHolding.ticker)
+    )
+    if portfolio_id is not None:
+        portfolio = _portfolio_for_profile(session, profile_id=profile_id, portfolio_id=portfolio_id)
+        statement = statement.where(StockHolding.portfolio_id == portfolio.id)
+    if not include_closed:
+        statement = statement.where(StockHolding.shares > 0)
+    if offset is not None:
+        statement = statement.offset(offset)
+    if limit is not None:
+        statement = statement.limit(limit)
+    return list(session.scalars(statement))
+
+
+def list_stock_transactions(
+    session: Session, *, profile_id: uuid.UUID, portfolio_id: int | None = None
+) -> list[StockTransaction]:
+    statement = (
+        select(StockTransaction)
+        .join(StockHolding, StockTransaction.holding_id == StockHolding.id)
+        .join(Portfolio, StockHolding.portfolio_id == Portfolio.id)
+        .where(Portfolio.profile_id == profile_id)
+        .order_by(StockTransaction.traded_at.desc(), StockTransaction.id.desc())
+    )
+    if portfolio_id is not None:
+        portfolio = _portfolio_for_profile(session, profile_id=profile_id, portfolio_id=portfolio_id)
+        statement = statement.where(StockHolding.portfolio_id == portfolio.id)
+    return list(session.scalars(statement))
+
+
+def stock_holding_payload(holding: StockHolding, *, current_price: float | None = None) -> dict[str, Any]:
+    shares = float(holding.shares)
+    average_cost = float(holding.average_cost)
+    live_price = float(current_price) if current_price is not None else None
+    market_value = live_price * shares if live_price is not None else None
+    unrealized_pnl = (live_price - average_cost) * shares if live_price is not None else None
+    history = {
+        side: [
+            {
+                "id": int(transaction.id), "shares": float(transaction.shares),
+                "price": float(transaction.price), "notes": transaction.notes,
+                "traded_at": transaction.traded_at.isoformat(),
+            }
+            for transaction in sorted(holding.transactions, key=lambda item: (item.traded_at, item.id))
+            if transaction.side == side
+        ]
+        for side in ("BUY", "SELL")
+    }
+    return {
+        "id": int(holding.id), "portfolio_id": int(holding.portfolio_id), "ticker": holding.ticker,
+        "shares": shares, "average_cost": average_cost, "current_price": live_price,
+        "market_value": market_value, "profit_loss": unrealized_pnl,
+        "unrealized_pnl": unrealized_pnl, "realized_pnl": float(holding.realized_pnl),
+        "notes": holding.notes, "created_at": holding.created_at.isoformat() if holding.created_at else None,
+        "updated_at": holding.updated_at.isoformat() if holding.updated_at else None,
+        "buy_history": history["BUY"], "sell_history": history["SELL"],
+    }
+
+
+def stock_transaction_payload(transaction: StockTransaction) -> dict[str, Any]:
+    holding = transaction.holding
+    return {
+        "id": int(transaction.id), "holding_id": int(transaction.holding_id),
+        "portfolio_id": int(holding.portfolio_id), "ticker": holding.ticker, "side": transaction.side,
+        "shares": float(transaction.shares), "price": float(transaction.price), "notes": transaction.notes,
+        "traded_at": transaction.traded_at.isoformat(),
+    }
+
+
 def legacy_position_payload(position: Position) -> dict[str, Any]:
     metadata = position.metadata_json or {}
     ticker = position.underlying_ticker or position.ticker
     return {
         "id": int(position.id),
+        "portfolio_id": int(position.portfolio_id),
         "ticker": ticker,
         "strike_price": float(position.strike_price or 0),
         "option_type": str(position.option_type or "CALL").upper(),

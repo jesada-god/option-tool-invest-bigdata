@@ -49,6 +49,24 @@ class MarketCatalogTests(unittest.TestCase):
         self.assertEqual(typo_results[0].symbol, "NVDA")
         self.assertNotIn("NVDA", [item.symbol for item in search_instruments("nvida", include_fuzzy=False)])
 
+    def test_aliases_and_advanced_filters_are_supported(self):
+        self.assertEqual(search_instruments("GOOG")[0].symbol, "GOOGL")
+        self.assertEqual(search_instruments("facebook")[0].symbol, "META")
+        self.assertEqual(search_instruments("googel")[0].symbol, "GOOGL")
+
+        filtered = search_instruments("sector:technology industry:semiconductor exchange:nasdaq country:us", limit=50)
+        self.assertTrue(filtered)
+        self.assertTrue(all(item.sector == "Information Technology" for item in filtered))
+        self.assertTrue(all(item.category == "Semiconductor" for item in filtered))
+        self.assertTrue(all(item.exchange == "NASDAQ" for item in filtered))
+        self.assertTrue(all(item.country == "United States" for item in filtered))
+
+    def test_natural_language_directory_search_and_unavailable_numeric_filters(self):
+        natural_results = search_instruments("semiconductor stocks on nasdaq", limit=50)
+        self.assertTrue(natural_results)
+        self.assertTrue(all(item.category == "Semiconductor" and item.exchange == "NASDAQ" for item in natural_results))
+        self.assertEqual(search_instruments("price:<100"), ())
+
     def test_category_listing_is_case_insensitive_and_bounded(self):
         semiconductors = list_instruments_by_category("semiconductor", limit=999)
         self.assertLessEqual(len(semiconductors), MAX_SEARCH_LIMIT)

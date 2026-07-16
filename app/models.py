@@ -143,6 +143,9 @@ class Portfolio(TimestampMixin, Base):
     positions: Mapped[list["Position"]] = relationship(
         back_populates="portfolio", cascade="all, delete-orphan"
     )
+    stock_holdings: Mapped[list["StockHolding"]] = relationship(
+        back_populates="portfolio", cascade="all, delete-orphan"
+    )
 
     __table_args__ = (
         UniqueConstraint("profile_id", "name", name="uq_portfolios_profile_name"),
@@ -263,6 +266,67 @@ class Position(TimestampMixin, Base):
         ),
         Index("ix_positions_ticker", "ticker"),
         Index("ix_positions_underlying_ticker", "underlying_ticker"),
+    )
+
+
+class StockHolding(TimestampMixin, Base):
+    """One current stock/ETF holding inside a user-owned portfolio.
+
+    Trade lots are retained in :class:`StockTransaction`; this row is the
+    fast, current-position projection used by the portfolio screen.
+    """
+
+    __tablename__ = "stock_holdings"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    portfolio_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("portfolios.id", ondelete="CASCADE"), nullable=False
+    )
+    ticker: Mapped[str] = mapped_column(String(12), nullable=False)
+    shares: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    average_cost: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    realized_pnl: Mapped[Decimal] = mapped_column(
+        Numeric(24, 8), nullable=False, default=0, server_default="0"
+    )
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+
+    portfolio: Mapped[Portfolio] = relationship(back_populates="stock_holdings")
+    transactions: Mapped[list["StockTransaction"]] = relationship(
+        back_populates="holding", cascade="all, delete-orphan", order_by="StockTransaction.traded_at"
+    )
+
+    __table_args__ = (
+        UniqueConstraint("portfolio_id", "ticker", name="uq_stock_holdings_portfolio_ticker"),
+        CheckConstraint("ticker = upper(ticker)", name="ck_stock_holdings_ticker_upper"),
+        CheckConstraint("char_length(ticker) BETWEEN 1 AND 12", name="ck_stock_holdings_ticker_length"),
+        CheckConstraint("shares >= 0", name="ck_stock_holdings_shares_nonnegative"),
+        CheckConstraint("average_cost >= 0", name="ck_stock_holdings_average_cost_nonnegative"),
+        Index("ix_stock_holdings_portfolio_ticker", "portfolio_id", "ticker"),
+    )
+
+
+class StockTransaction(TimestampMixin, Base):
+    """Immutable buy/sell history for a stock holding."""
+
+    __tablename__ = "stock_transactions"
+
+    id: Mapped[int] = mapped_column(BigInteger, Identity(), primary_key=True)
+    holding_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("stock_holdings.id", ondelete="CASCADE"), nullable=False
+    )
+    side: Mapped[str] = mapped_column(String(4), nullable=False)
+    shares: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    price: Mapped[Decimal] = mapped_column(Numeric(24, 8), nullable=False)
+    notes: Mapped[str | None] = mapped_column(Text, nullable=True)
+    traded_at: Mapped[date] = mapped_column(Date, nullable=False, server_default=func.current_date())
+
+    holding: Mapped[StockHolding] = relationship(back_populates="transactions")
+
+    __table_args__ = (
+        CheckConstraint("side IN ('BUY', 'SELL')", name="ck_stock_transactions_side"),
+        CheckConstraint("shares > 0", name="ck_stock_transactions_shares_positive"),
+        CheckConstraint("price >= 0", name="ck_stock_transactions_price_nonnegative"),
+        Index("ix_stock_transactions_holding_traded", "holding_id", "traded_at"),
     )
 
 

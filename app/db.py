@@ -96,16 +96,6 @@ def session_scope() -> Generator[Session, None, None]:
         session.close()
 
 
-def get_db_session() -> Generator[Session, None, None]:
-    """FastAPI dependency-compatible session generator for future routes."""
-
-    session = get_session_factory()()
-    try:
-        yield session
-    finally:
-        session.close()
-
-
 def database_ready() -> bool:
     """Perform a lightweight readiness check only when explicitly invoked."""
 

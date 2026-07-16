@@ -66,6 +66,9 @@ class MarketInstrument:
     sector: str
     category: str
     exchange: str
+    # The catalog is intentionally US-listed.  This describes the listing
+    # country, rather than attempting to infer an issuer's legal domicile.
+    country: str = "United States"
 
     def as_dict(self) -> dict[str, str]:
         """Return an API-ready, JSON-serialisable representation."""
@@ -76,11 +79,19 @@ class MarketInstrument:
             "sector": self.sector,
             "category": self.category,
             "exchange": self.exchange,
+            "country": self.country,
         }
 
 
-def _record(symbol: str, name: str, sector: str, category: str, exchange: str) -> MarketInstrument:
-    return MarketInstrument(symbol, name, sector, category, exchange)
+def _record(
+    symbol: str,
+    name: str,
+    sector: str,
+    category: str,
+    exchange: str,
+    country: str = "United States",
+) -> MarketInstrument:
+    return MarketInstrument(symbol, name, sector, category, exchange, country)
 
 
 # This is intentionally a reference catalog, not an exhaustive security
@@ -338,6 +349,7 @@ def _validate_catalog(records: Iterable[MarketInstrument]) -> tuple[MarketInstru
                 instrument.sector,
                 instrument.category,
                 instrument.exchange,
+                instrument.country,
             )
         ):
             raise ValueError("Market catalog records require non-empty string fields")
@@ -369,6 +381,46 @@ _CATEGORY_BY_NORMALISED_NAME.update(
     }
 )
 
+# Search aliases are deliberately explicit and point only to catalog symbols.
+# They cover common legacy tickers and familiar company/index names without
+# turning the reference catalog into an unbounded symbol master.
+_TICKER_ALIASES: dict[str, tuple[str, ...]] = {
+    "goog": ("GOOGL",),
+    "fb": ("META",),
+    "brk b": ("BRK.B",),
+    "sp500": ("SPY",),
+    "s p 500": ("SPY",),
+    "nasdaq100": ("QQQ",),
+    "nasdaq 100": ("QQQ",),
+    "russell2000": ("IWM",),
+    "russell 2000": ("IWM",),
+    "dow": ("DIA",),
+}
+_COMPANY_ALIASES: dict[str, tuple[str, ...]] = {
+    "google": ("GOOGL",),
+    "facebook": ("META",),
+    "berkshire": ("BRK.B",),
+    "amazon": ("AMZN",),
+    "netflix": ("NFLX",),
+    "nvidia": ("NVDA",),
+    "tesla": ("TSLA",),
+    "apple": ("AAPL",),
+    "microsoft": ("MSFT",),
+    "coca cola": ("KO",),
+}
+_COUNTRY_ALIASES = {
+    "us": "united states",
+    "usa": "united states",
+    "u s": "united states",
+    "america": "united states",
+}
+_DIRECTORY_FILTER_KEYS = frozenset({"sector", "industry", "country", "exchange"})
+# The catalog intentionally has no price/fundamental values. These keys are
+# still parsed so a search client can offer complete query autocomplete without
+# misrepresenting stale or invented values as provider-backed facts.
+_NUMERIC_FILTER_KEYS = frozenset({"marketcap", "price", "pe", "dividend"})
+_FILTER_KEYS = _DIRECTORY_FILTER_KEYS | _NUMERIC_FILTER_KEYS
+
 
 def _safe_limit(limit: object, *, default: int) -> int:
     """Clamp externally supplied result sizes without raising on bad input."""
@@ -382,6 +434,83 @@ def _safe_limit(limit: object, *, default: int) -> int:
     except (TypeError, ValueError, OverflowError):
         return default
     return max(0, min(parsed, MAX_SEARCH_LIMIT))
+
+
+def _parse_search_query(query: str) -> tuple[str, dict[str, str]]:
+    """Split explicit filters and common natural-language search phrases."""
+
+    filters: dict[str, str] = {}
+    free_terms: list[str] = []
+    for token in re.findall(r'(?:[^\s"]|"[^"]*")+', query):
+        key, separator, value = token.partition(":")
+        normalized_key = key.casefold()
+        if separator and normalized_key in _FILTER_KEYS and value:
+            normalized_value = _normalise_phrase(value.strip('"'))
+            if normalized_value:
+                filters[normalized_key] = normalized_value
+            continue
+        free_terms.append(token)
+    free_text = " ".join(free_terms)
+    phrase = _normalise_phrase(free_text)
+    natural_patterns = (
+        (r"\bhigh dividend\b", "industry"),
+        (r"\b(?:on|in)\s+(nasdaq|nyse|nyse arca)\b", "exchange"),
+        (r"\b(?:us|usa|american)\s+(?:stocks?|companies?|etfs?)\b", "country"),
+        (r"\b(semiconductor|biotech|pharma|insurance|defense|energy|utilities|dividend|growth)\s+(?:stocks?|companies?|etfs?)\b", "industry"),
+        (r"\b(information technology|technology|healthcare|financials|consumer discretionary|consumer staples|materials)\s+(?:stocks?|companies?|etfs?)\b", "sector"),
+    )
+    for pattern, key in natural_patterns:
+        match = re.search(pattern, phrase)
+        if not match:
+            continue
+        value = "dividend" if pattern == r"\bhigh dividend\b" else match.group(1)
+        filters.setdefault(key, value)
+        phrase = f"{phrase[:match.start()]} {phrase[match.end():]}"
+    # These words describe the search rather than an instrument.
+    phrase = re.sub(r"\b(?:find|show|me|the|stocks?|companies?|etfs?)\b", " ", phrase)
+    return _normalise_phrase(phrase), filters
+
+
+def _matches_filters(instrument: MarketInstrument, filters: dict[str, str]) -> bool:
+    sector = _normalise_phrase(instrument.sector)
+    industry = _normalise_phrase(instrument.category)
+    country = _normalise_phrase(instrument.country)
+    exchange = _normalise_phrase(instrument.exchange)
+    requested_sector = filters.get("sector")
+    requested_industry = filters.get("industry")
+    requested_country = filters.get("country")
+    requested_exchange = filters.get("exchange")
+    # Numeric filters require live provider fundamentals and are deliberately
+    # not evaluated against this offline discovery catalog.
+    if any(key in filters for key in _NUMERIC_FILTER_KEYS):
+        return False
+    if requested_sector and requested_sector not in sector:
+        return False
+    if requested_industry:
+        canonical_industry = _CATEGORY_BY_NORMALISED_NAME.get(requested_industry, requested_industry)
+        if canonical_industry != instrument.category and requested_industry not in industry:
+            return False
+    if requested_country:
+        canonical_country = _COUNTRY_ALIASES.get(requested_country, requested_country)
+        if canonical_country not in country:
+            return False
+    return not requested_exchange or requested_exchange in exchange
+
+
+def _alias_rank(symbol: str, query_phrase: str) -> tuple[int, int] | None:
+    """Return a stable alias tier, or ``None`` when no alias applies."""
+
+    for aliases, exact_tier in ((_TICKER_ALIASES, 0), (_COMPANY_ALIASES, 1)):
+        for alias, symbols in aliases.items():
+            if symbol not in symbols:
+                continue
+            if query_phrase == alias:
+                return (exact_tier, 0)
+            if alias.startswith(query_phrase):
+                return (exact_tier + 2, 0)
+            if query_phrase in alias:
+                return (exact_tier + 4, alias.index(query_phrase))
+    return None
 
 
 def get_instrument(symbol: object) -> MarketInstrument | None:
@@ -429,12 +558,18 @@ def _word_prefix_match(query_phrase: str, field_phrase: str) -> bool:
 def _fuzzy_score(query_compact: str, instrument: MarketInstrument) -> float:
     """Return a deterministic typo-tolerance score across safe static fields."""
 
+    aliases = tuple(
+        _normalise_compact(alias)
+        for alias_map in (_TICKER_ALIASES, _COMPANY_ALIASES)
+        for alias, symbols in alias_map.items()
+        if instrument.symbol in symbols
+    )
     targets = (
         _normalise_compact(instrument.symbol),
         _normalise_compact(instrument.name),
         _normalise_compact(instrument.category),
         _normalise_compact(instrument.sector),
-    )
+    ) + aliases
     return max(
         SequenceMatcher(None, query_compact, target, autojunk=False).ratio()
         for target in targets
@@ -463,6 +598,12 @@ def search_instruments(
 
     Ranking is: exact ticker, exact name, ticker prefix, name-word prefix,
     ticker contains, name/category/sector contains, then fuzzy typo matches.
+    The query accepts ``sector:``, ``industry:``, ``country:``, and
+    ``exchange:`` filters, plus natural phrases such as "semiconductor stocks
+    on NASDAQ". ``marketcap:``, ``price:``, ``pe:``, and ``dividend:`` are
+    parsed but cannot be evaluated until provider-backed fundamentals are in
+    the catalog. Common legacy tickers and company names resolve through the
+    explicit alias map before fuzzy matching.
     Prefix matches use the curated catalog order as their relevance order; all
     other ties resolve by symbol and name.  The response is therefore stable
     for APIs, cache keys, and tests.
@@ -472,29 +613,42 @@ def search_instruments(
         return ()
     if len(query) > MAX_QUERY_LENGTH:
         return ()
-    query_phrase = _normalise_phrase(query)
-    query_compact = _normalise_compact(query)
+    free_text, filters = _parse_search_query(query)
+    query_phrase = _normalise_phrase(free_text)
+    query_compact = _normalise_compact(free_text)
     max_results = _safe_limit(limit, default=DEFAULT_SEARCH_LIMIT)
-    if not query_phrase or not query_compact or max_results == 0:
+    if max_results == 0 or (not filters and (not query_phrase or not query_compact)):
         return ()
 
     ranked: list[tuple[tuple[object, ...], MarketInstrument]] = []
     fuzzy_threshold = _fuzzy_threshold(query_compact)
 
     for instrument in MARKET_CATALOG:
+        if not _matches_filters(instrument, filters):
+            continue
+        if not query_phrase or not query_compact:
+            ranked.append(((7, 0, 0, instrument.symbol, instrument.name), instrument))
+            continue
         symbol = _normalise_compact(instrument.symbol)
         name = _normalise_phrase(instrument.name)
         category = _normalise_phrase(instrument.category)
         sector = _normalise_phrase(instrument.sector)
+        alias_rank = _alias_rank(instrument.symbol, query_phrase)
 
         if query_compact == symbol:
-            rank: tuple[object, ...] = (0, 0, instrument.symbol, instrument.name)
+            rank: tuple[object, ...] = (0, 0, 0, instrument.symbol, instrument.name)
         elif query_phrase == name:
-            rank = (1, 0, instrument.symbol, instrument.name)
+            rank = (1, 0, 0, instrument.symbol, instrument.name)
+        # Exact legacy/company aliases should resolve before partial matches,
+        # but a partial alias must not outrank a direct ticker prefix.
+        elif alias_rank is not None and alias_rank[0] < 2:
+            rank = (alias_rank[0], alias_rank[1], 0, instrument.symbol, instrument.name)
         elif symbol.startswith(query_compact):
-            rank = (2, _CATALOG_POSITION[instrument.symbol], instrument.symbol, instrument.name)
+            rank = (2, _CATALOG_POSITION[instrument.symbol], 0, instrument.symbol, instrument.name)
         elif _word_prefix_match(query_phrase, name):
-            rank = (3, len(name), instrument.symbol, instrument.name)
+            rank = (3, len(name), 0, instrument.symbol, instrument.name)
+        elif alias_rank is not None:
+            rank = (alias_rank[0], alias_rank[1], 0, instrument.symbol, instrument.name)
         elif query_compact in symbol:
             rank = (4, symbol.index(query_compact), len(symbol), instrument.symbol, instrument.name)
         elif query_phrase in name:

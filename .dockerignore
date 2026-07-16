@@ -14,3 +14,14 @@ env
 .mypy_cache
 htmlcov
 *.log
+
+# Repository-only CI, tests, and local agent artifacts are not production assets.
+.github/
+.agents/
+.codex/
+tests/
+README.md
+.env.example
+render.yaml
+scripts/check_frontend.cjs
+scripts/check_python_quality.py

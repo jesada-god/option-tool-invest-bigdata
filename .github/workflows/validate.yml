@@ -8,18 +8,21 @@ permissions:
   contents: read
 
 jobs:
-  backend-syntax:
-    name: Backend syntax
+  backend:
+    name: Backend tests and security checks
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version-file: .python-version
-      - name: Install backend dependencies
-        run: python -m pip install -r requirements.txt
-      - name: Compile Python modules
-        run: python -m compileall -q .
+      - name: Install backend and audit dependencies
+        run: python -m pip install -r requirements.txt pip-audit
+      - name: Compile and lint production Python
+        run: |
+          python -m compileall -q .
+          python scripts/check_python_quality.py
+          python scripts/validate_production_config.py
       - name: Import application and verify health check
         run: python -c "import main; assert main.health_check()['status'] == 'ok'"
       - name: Run deterministic unit tests
@@ -39,28 +42,20 @@ jobs:
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
           exit "$test_status"
+      - name: Audit Python dependencies
+        run: python -m pip_audit -r requirements.txt
       - name: Validate Render startup script
         run: sh -n scripts/start-render.sh
 
-  frontend-syntax:
-    name: Frontend syntax
+  frontend:
+    name: Frontend tests and lint
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Validate JavaScript syntax
-        run: node --check tmp_fullscript.js
-      - name: Verify inline script mirror
-        run: |
-          node - <<'NODE'
-          const fs = require('fs');
-          const html = fs.readFileSync('index.html', 'utf8');
-          const inline = html.match(/<script>\s*([\s\S]*?)\s*<\/script>/);
-          if (!inline) throw new Error('Inline application script was not found.');
-          const mirror = fs.readFileSync('tmp_fullscript.js', 'utf8').trim();
-          if (inline[1].trim() !== mirror) {
-            throw new Error('index.html inline script and tmp_fullscript.js are out of sync.');
-          }
-          NODE
+      - name: Run frontend unit and route smoke tests
+        run: node --test tests/frontend/*.test.cjs
+      - name: Lint and syntax-check frontend sources
+        run: node scripts/check_frontend.cjs
