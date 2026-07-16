@@ -142,15 +142,23 @@
 
         function toggleIndicatorsPanel() {
             const panel = document.getElementById('indicators-panel');
-            panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+            if (!panel) return;
+            // The control can be clicked while the lazy Home route is still
+            // loading. Render the existing panel before revealing it instead
+            // of showing an empty menu.
+            if (!panel.innerHTML.trim()) renderIndicatorsPanel();
+            const willOpen = panel.style.display === 'none';
+            panel.style.display = willOpen ? 'block' : 'none';
+            document.getElementById('indicators-btn')?.setAttribute('aria-expanded', String(willOpen));
         }
 
         // ปิด panel เมื่อคลิกนอกพื้นที่
         document.addEventListener('click', function (e) {
             const panel = document.getElementById('indicators-panel');
             const btn = document.getElementById('indicators-btn');
-            if (panel && panel.style.display === 'block' && !panel.contains(e.target) && e.target !== btn) {
+            if (panel && panel.style.display === 'block' && !panel.contains(e.target) && !btn?.contains(e.target)) {
                 panel.style.display = 'none';
+                btn?.setAttribute('aria-expanded', 'false');
             }
         });
 

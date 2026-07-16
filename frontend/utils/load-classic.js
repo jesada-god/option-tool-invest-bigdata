@@ -1,5 +1,5 @@
 const loadedAssets = new Map();
-const ASSET_REVISION = '20260717.1';
+const ASSET_REVISION = '20260717.3';
 
 function revisionedAssetUrl(src) {
     const url = new URL(src, 'http://quantora.local');

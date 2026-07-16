@@ -16,7 +16,7 @@ window.searchStock = function queueInitialSearch() {
 };
 
 (async function loadApplicationShell() {
-    const APP_SHELL_REVISION = '20260717.1';
+    const APP_SHELL_REVISION = '20260717.3';
     const modules = [
         '../state/store',
         '../state/app',

@@ -188,6 +188,7 @@
                 selector.appendChild(option);
             });
             if (!selector.value && selector.options.length) selector.selectedIndex = 0;
+            selector.onchange = event => selectCloudPortfolio(event.target.value);
         }
 
         function setCloudWorkspaceStatus(message = '', tone = '') {
@@ -464,7 +465,10 @@
             if (!cloudWorkspace.portfolios.some(item => cloudWorkspaceId(item && item.id) === id && !item.archived_at)) return;
             cloudWorkspace.selectedPortfolioId = id;
             updatePositionPortfolioSelector();
-            renderPortfolioTable();
+            // This workspace controller loads before the lazy Portfolio
+            // route. Refresh portfolio surfaces only once they are present.
+            if (typeof renderPortfolioTable === 'function') renderPortfolioTable();
+            if (typeof loadPortfolioModuleData === 'function') void loadPortfolioModuleData();
             renderCloudWorkspaceManager();
         }
 

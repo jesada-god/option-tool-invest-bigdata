@@ -2788,7 +2788,7 @@
                     style="border-color: var(--blue); color: #38bdf8; background:none;">🔄 รีเซ็ต</button>
                 <button id="toggle-dashboard" onclick="toggleExpectedMoveDashboard()"
                     style="border-color: #38bdf8; color: #38bdf8; background:none;">📈 Dashboard ▾</button>
-                <button id="indicators-btn" onclick="toggleIndicatorsPanel()"
+                <button id="indicators-btn" onclick="toggleIndicatorsPanel()" aria-expanded="false" aria-controls="indicators-panel"
                     style="border-color: #a78bfa; color: #a78bfa; background:none;">📊 Indicators ▾</button>
                 <div id="indicators-panel" class="indicators-panel" style="display:none;"></div>
             </div>
@@ -3103,7 +3103,7 @@
         </section>
     </div>
 
-    <script src="/assets/app-shell.js?v=20260717.2" defer></script>
+    <script src="/assets/app-shell.js?v=20260717.3" defer></script>
 </body>
 
 </html>

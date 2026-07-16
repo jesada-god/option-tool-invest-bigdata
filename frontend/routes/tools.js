@@ -1,4 +1,4 @@
-import { loadClassicAsset } from '/assets/utils/load-classic.js?v=20260717.1';
+import { loadClassicAsset } from '/assets/utils/load-classic.js?v=20260717.3';
 
 export default async () => {
     await loadClassicAsset('/assets/pages/tools.js');

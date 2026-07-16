@@ -213,7 +213,17 @@
             const host = document.getElementById('portfolio-overview-summary');
             if (!host) return;
             if (!cloudWorkspaceEnabled()) {
-                host.innerHTML = '<div class="portfolio-empty-state"><h4>Portfolio is unavailable</h4><p>Sign in to view the portfolios saved to your account.</p></div>';
+                // Option positions deliberately support session-local mode.
+                // Keep that existing workflow reachable from Overview instead
+                // of presenting the entire portfolio as unavailable.
+                const positions = Array.isArray(activePositions) ? activePositions : [];
+                const value = positions.reduce((total, position) => {
+                    const premium = portfolioNumber(position?.premium_paid) || 0;
+                    const quantity = portfolioNumber(position?.quantity) || 0;
+                    const pnl = portfolioNumber(position?.pnl) || 0;
+                    return total + (premium * quantity * 100) + pnl;
+                }, 0);
+                host.innerHTML = `<button class="portfolio-type-card" type="button" aria-label="Open session options portfolio" onclick="openPortfolioType('options')"><div class="portfolio-card-top"><div><p class="portfolio-card-eyebrow">Options Portfolio</p><h4 class="portfolio-card-name">This device</h4></div><span style="color:var(--blue); font-size:18px;" aria-hidden="true">→</span></div><strong class="portfolio-card-value">${portfolioMoney(value)}</strong><div class="portfolio-card-metrics"><div><span>Open positions</span><strong>${positions.length}</strong></div><div><span>Storage</span><strong>Session only</strong></div><div><span>Stocks</span><strong>Sign in to sync</strong></div></div></button>`;
                 return;
             }
             const selected = portfolioSelectedItem();
@@ -501,16 +511,18 @@
                 try {
                     if (!cloudWorkspace.loaded) await loadCloudWorkspace();
                     const selectedId = cloudWorkspaceId(portfolioSelectedItem()?.id);
-                    if (portfolioModuleView === 'options') {
+                    // Overview contains an options card, so it needs the
+                    // same position data as the Options tab.
+                    if (portfolioModuleView === 'options' || portfolioModuleView === 'overview') {
                         await fetchPortfolio();
-                        renderPortfolioOverview();
-                        return;
                     }
                     await loadStockPortfolioSummary(selectedId);
                     if (portfolioModuleView === 'stocks') await loadStockHoldingsPage(selectedId);
                     const cachedHoldings = stockPortfolioHoldingCache.get(selectedId);
                     stockPortfolioItems = cachedHoldings?.items || [];
-                    renderPortfolioOverview(); renderStockPortfolio(); if (portfolioModuleView === 'holding') renderHoldingDetail();
+                    renderPortfolioOverview();
+                    renderStockPortfolio();
+                    if (portfolioModuleView === 'holding') renderHoldingDetail();
                 } catch (error) { if (!error || error.name !== 'AbortError') { const status = document.getElementById('stock-portfolio-status'); if (status) status.textContent = 'Portfolio data is temporarily unavailable.'; } }
             })();
             portfolioModuleLoadPromise = task; try { return await task; } finally { if (portfolioModuleLoadPromise === task) portfolioModuleLoadPromise = null; }

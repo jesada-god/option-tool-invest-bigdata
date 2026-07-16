@@ -26,7 +26,7 @@ test('classic asset loader loads each requested asset once', async () => {
     const second = loadClassicAsset('/assets/pages/home.js');
     assert.strictEqual(first, second);
     await first;
-    assert.deepEqual(appended, ['/assets/pages/home.js?v=20260717.1']);
+    assert.deepEqual(appended, ['/assets/pages/home.js?v=20260717.3']);
 });
 
 test('route smoke coverage includes every navigation destination and chunk', () => {
@@ -146,6 +146,16 @@ test('portfolio local mode and iOS dialog fallbacks remain runtime-safe', () => 
     assert.match(portfolio, /typeof dialog\.showModal === 'function'/);
     assert.doesNotMatch(read('frontend/state/portfolio.js'), /Object\.fromEntries/);
     assert.doesNotMatch(read('frontend/state/watchlist.js'), /Object\.fromEntries/);
+});
+
+test('portfolio overview loads both holdings and option positions after a portfolio selection', () => {
+    const portfolio = read('frontend/portfolio/terminal.js');
+    const workspace = read('frontend/app-shell/workspace.js');
+    assert.match(portfolio, /portfolioModuleView === 'options' \|\| portfolioModuleView === 'overview'/);
+    assert.match(portfolio, /Open session options portfolio/);
+    assert.match(workspace, /typeof renderPortfolioTable === 'function'/);
+    assert.match(workspace, /typeof loadPortfolioModuleData === 'function'/);
+    assert.match(workspace, /selector\.onchange = event => selectCloudPortfolio/);
 });
 
 test('malformed route fragments remain recoverable', () => {

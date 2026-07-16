@@ -139,17 +139,34 @@
             chartContainer?.setAttribute('aria-busy', 'true');
 
             try {
-                const [statsRes, chartRes, indRes] = await Promise.all([
+                // S/R is an enhancement to the existing chart, not a
+                // prerequisite for it.  A temporary provider failure in the
+                // indicator endpoint used to abort this whole request, which
+                // left both the chart EMA controls and S/R appearing broken.
+                const indicatorsRequest = fetch(
+                    `/api/indicators?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`,
+                    { signal: context.signal, cache: 'no-store' }
+                )
+                    .then(async response => {
+                        if (!response.ok) throw new Error(`Indicators request failed: ${response.status} ${response.statusText}`);
+                        return response.json();
+                    })
+                    .catch(error => {
+                        if (!isAbortError(error) && isCurrentView(context)) {
+                            reportQuantoraError(error, { area: 'indicators' });
+                        }
+                        return null;
+                    });
+                const [statsRes, chartRes, indicators] = await Promise.all([
                     fetch(`/api/stats?ticker=${encodeURIComponent(context.ticker)}`, { signal: context.signal, cache: 'no-store' }),
                     fetch(`/api/chart-data?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`, { signal: context.signal, cache: 'no-store' }),
-                    fetch(`/api/indicators?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`, { signal: context.signal, cache: 'no-store' }),
+                    indicatorsRequest,
                 ]);
                 if (!isCurrentView(context)) return;
                 if (!statsRes.ok) throw new Error(`Stats request failed: ${statsRes.status} ${statsRes.statusText}`);
                 if (!chartRes.ok) throw new Error(`Chart-data request failed: ${chartRes.status} ${chartRes.statusText}`);
-                if (!indRes.ok) throw new Error(`Indicators request failed: ${indRes.status} ${indRes.statusText}`);
 
-                const [statsPayload, chartPayload, indicators] = await Promise.all([statsRes.json(), chartRes.json(), indRes.json()]);
+                const [statsPayload, chartPayload] = await Promise.all([statsRes.json(), chartRes.json()]);
                 if (!isCurrentView(context)) return;
                 const showNoMarketData = () => {
                     globalChartData = [];
@@ -223,7 +240,12 @@
                 renderDashboardOverlay();
 
                 if (!isCurrentView(context)) return;
-                srData = indicators;
+                // Keep the established S/R payload shape even while its
+                // request is being retried, so the existing UI can remain
+                // safely interactive.
+                srData = indicators && typeof indicators === 'object'
+                    ? indicators
+                    : { support: [], resistance: [], closest_alert: null, basis_timeframe: context.timeframe };
                 renderSRLadder();
 
                 if (currentMarketSession === 'REGULAR') initWebSocket(context);
@@ -427,7 +449,7 @@
         function toggleSupportResistance() {
             if (isSRVisible) { removeSRLines(); }
             else {
-                if (!srData) return;
+                if (!srData || !candleSeries) return;
                 const resColors = ['#ff8a80', '#ff5c4d', '#ff3b30'];
                 const supColors = ['#69f0ae', '#2ee08a', '#00c57f'];
                 const widths = [4, 3, 3];
@@ -450,9 +472,16 @@
                     ? (Array.isArray(srData.support) ? srData.support.filter(filterFn) : [])
                     : (Array.isArray(srData.support) ? srData.support.slice() : []);
 
-                resToShow.forEach((r, i) => srLines.push(f(r.level, resColors[i] || '#ff3b30', widths[i] || 3, `${r.label} แนวต้าน (${r.strength}% ${r.confidence})`)));
-                supToShow.forEach((s, i) => srLines.push(f(s.level, supColors[i] || '#00c57f', widths[i] || 3, `${s.label} แนวรับ (${s.strength}% ${s.confidence})`)));
+                resToShow
+                    .filter(level => Number.isFinite(Number(level?.level)))
+                    .forEach((r, i) => srLines.push(f(Number(r.level), resColors[i] || '#ff3b30', widths[i] || 3, `${r.label} แนวต้าน (${r.strength}% ${r.confidence})`)));
+                supToShow
+                    .filter(level => Number.isFinite(Number(level?.level)))
+                    .forEach((s, i) => srLines.push(f(Number(s.level), supColors[i] || '#00c57f', widths[i] || 3, `${s.label} แนวรับ (${s.strength}% ${s.confidence})`)));
 
+                // Do not leave the control active when an unavailable
+                // provider returned no usable levels.
+                if (!srLines.length) return;
                 isSRVisible = true; document.getElementById('toggle-sr').classList.add('active');
             }
         }

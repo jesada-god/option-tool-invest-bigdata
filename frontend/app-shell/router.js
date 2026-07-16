@@ -8,7 +8,7 @@
             home: 'home-section', watchlist: 'watchlist-row', search: 'search-input',
             analysis: 'tvchart', tools: 'tools-section', portfolio: 'portfolio-section', profile: 'profile-sheet',
         });
-        const ROUTE_MODULE_REVISION = '20260717.1';
+        const ROUTE_MODULE_REVISION = '20260717.3';
         const ROUTE_MODULE_IMPORTERS = Object.freeze({
             home: () => import(`/assets/routes/home.js?v=${ROUTE_MODULE_REVISION}`),
             watchlist: () => import(`/assets/routes/watchlist.js?v=${ROUTE_MODULE_REVISION}`),

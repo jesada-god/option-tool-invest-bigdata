@@ -87,7 +87,7 @@
             setInitialSkeletonLoading(true);
             setNetworkStatus(navigator.onLine);
             applyLanguage(userPreferences.language);
-            const { loadClassicAsset } = await import('/assets/utils/load-classic.js?v=20260717.1');
+            const { loadClassicAsset } = await import('/assets/utils/load-classic.js?v=20260717.3');
             await loadClassicAsset('/assets/components/indicators.js');
             await loadClassicAsset('/assets/api/resilience.js');
             await loadClassicAsset('/assets/api/cache.js');
