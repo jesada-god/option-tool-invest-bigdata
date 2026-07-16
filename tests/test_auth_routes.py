@@ -2,6 +2,7 @@ import uuid
 import unittest
 from unittest.mock import patch
 
+from fastapi import HTTPException
 from starlette.requests import Request
 from starlette.responses import Response
 
@@ -94,3 +95,55 @@ class AuthRouteTests(unittest.TestCase):
         self.assertTrue(result["authenticated"])
         self.assertTrue(result["csrf_token"])
         self.assertEqual(result["csrf_token"], response.headers["X-CSRF-Token"])
+
+    def test_me_reports_unavailable_auth_as_disabled_instead_of_503(self):
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "scheme": "https",
+                "path": "/api/auth/me",
+                "query_string": b"",
+                "headers": [(b"host", b"terminal.example")],
+                "client": ("127.0.0.1", 12345),
+                "server": ("terminal.example", 443),
+            }
+        )
+        with patch(
+            "main.get_runtime_auth_settings",
+            side_effect=HTTPException(status_code=503, detail="auth provider unavailable"),
+        ):
+            result = main.get_me(request, Response())
+
+        self.assertFalse(result["auth_enabled"])
+        self.assertFalse(result["authenticated"])
+        self.assertFalse(result["cloud_sync_enabled"])
+        self.assertEqual(result["configuration_error"], "auth provider unavailable")
+
+    def test_me_reports_invalid_optional_persistence_as_cloud_sync_disabled(self):
+        request = Request(
+            {
+                "type": "http",
+                "method": "GET",
+                "scheme": "https",
+                "path": "/api/auth/me",
+                "query_string": b"",
+                "headers": [(b"host", b"terminal.example")],
+                "client": ("127.0.0.1", 12345),
+                "server": ("terminal.example", 443),
+            }
+        )
+        with patch("main.get_runtime_auth_settings", return_value=self.settings), patch(
+            "main.auth_runtime_is_available", return_value=True
+        ), patch("main.google_callback_is_available", return_value=False), patch(
+            "main.get_optional_current_user", return_value=None
+        ), patch(
+            "main.persistence_is_configured",
+            side_effect=HTTPException(status_code=503, detail="DATABASE_URL is invalid"),
+        ):
+            result = main.get_me(request, Response())
+
+        self.assertTrue(result["auth_enabled"])
+        self.assertFalse(result["authenticated"])
+        self.assertFalse(result["cloud_sync_enabled"])
+        self.assertEqual(result["configuration_error"], "DATABASE_URL is invalid")

@@ -4416,6 +4416,10 @@
         }
 
         async function saveProfileDetails() {
+            if (!authState.authenticated || !authState.cloudSyncEnabled) {
+                setAuthStatus('Cloud profile storage is not configured for this deployment.', 'error');
+                return;
+            }
             const username = document.getElementById('profile-display-name')?.value.trim() || '';
             if (username && !/^[A-Za-z0-9_.-]{3,32}$/.test(username)) {
                 setAuthStatus('ชื่อที่แสดงต้องมี 3–32 ตัวอักษร และใช้ได้เฉพาะตัวอักษร ตัวเลข จุด ขีดล่าง หรือขีดกลาง', 'error');
@@ -4592,6 +4596,13 @@
                 if (sessionEpoch !== authSessionEpoch) return;
                 if (res.status === 404) {
                     authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
+                } else if (!res.ok) {
+                    // A server-side auth configuration failure is not the
+                    // unauthenticated legacy mode. Keep data APIs gated so
+                    // bootstrap does not make requests guaranteed to get 503.
+                    const error = await res.json().catch(() => ({}));
+                    console.warn('Account session is unavailable:', error.detail || res.status);
+                    authState = { ...authState, configured: true, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
                 } else {
                     const data = await res.json();
                     if (sessionEpoch !== authSessionEpoch) return;
@@ -4608,7 +4619,10 @@
             } catch (err) {
                 if (sessionEpoch !== authSessionEpoch) return;
                 console.warn('Unable to load account session:', err);
-                authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
+                // A transport failure is not evidence that this is an
+                // auth-disabled legacy deployment. Keep cloud data paths
+                // gated until a successful session response says otherwise.
+                authState = { ...authState, configured: true, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
             }
             if (sessionEpoch !== authSessionEpoch) return;
             // A renewed session can belong to a different account. Clear the
@@ -6174,6 +6188,11 @@
         async function deleteWatchlist(ticker) {
             const wasCurrent = currentTicker === ticker;
             try {
+                if (authState.configured === true && !authState.authenticated) {
+                    openProfileSheet();
+                    setAuthStatus('Sign in before changing a cloud watchlist.', 'error');
+                    return;
+                }
                 if (cloudWorkspaceEnabled()) {
                     if (!selectedCloudWatchlist()) await loadCloudWorkspace();
                     if (!selectedCloudWatchlist()) {
@@ -6257,6 +6276,16 @@
                 activePositions = [];
                 renderPortfolioTable();
                 updateHomePortfolioSurface();
+                return;
+            }
+            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
+                // The backend deliberately does not expose the shared demo
+                // portfolio once account auth is enabled without persistence.
+                // Do not issue a request that must fail with 503.
+                activePositions = [];
+                renderPortfolioTable();
+                updateHomePortfolioSurface();
+                setPositionFormStatus('Cloud portfolio storage is not configured for this deployment.', 'error');
                 return;
             }
             portfolioRefreshInFlight = true;
@@ -6396,6 +6425,15 @@
 
         async function submitPosition(e) {
             e.preventDefault();
+            if (authState.configured === true && !authState.authenticated) {
+                openProfileSheet();
+                setAuthStatus('Sign in before changing a cloud portfolio.', 'error');
+                return;
+            }
+            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
+                setPositionFormStatus('Cloud portfolio storage is not configured for this deployment.', 'error');
+                return;
+            }
             const payload = positionPayloadFromForm();
             const validationMessage = validatePositionPayload(payload);
             if (validationMessage) { setPositionFormStatus(validationMessage, 'error'); return; }
@@ -6451,6 +6489,15 @@
         }
 
         async function closePosition(id) {
+            if (authState.configured === true && !authState.authenticated) {
+                openProfileSheet();
+                setAuthStatus('Sign in before changing a cloud portfolio.', 'error');
+                return;
+            }
+            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
+                setPositionFormStatus('Cloud portfolio storage is not configured for this deployment.', 'error');
+                return;
+            }
             try {
                 const res = await authFetch(`/api/positions/${id}`, { method: 'DELETE', headers: authHeaders() });
                 const result = await res.json().catch(() => ({}));
@@ -7388,8 +7435,9 @@
         async function loadFullGaugesLegacy(ticker) {
             const grid = document.getElementById('full-gauges-grid');
             try {
-                const res = await fetch(`/api/gauges?ticker=${ticker}`);
-                const data = await res.json();
+                const res = await authFetch(`/api/gauges?ticker=${encodeURIComponent(ticker)}`, { cache: 'no-store' });
+                const data = await res.json().catch(() => ({}));
+                if (!res.ok) throw new Error(data.detail || `Gauges request failed: ${res.status}`);
                 const gauges = data.gauges || {};
 
                 const conf = gauges.confidence_score;

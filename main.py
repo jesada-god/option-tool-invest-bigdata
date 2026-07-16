@@ -1643,7 +1643,21 @@ def auth_config(request: Request):
 @app.get("/api/auth/me", include_in_schema=False)
 @app.get("/api/me")
 def get_me(request: Request, response: Response):
-    settings = get_runtime_auth_settings()
+    try:
+        settings = get_runtime_auth_settings()
+    except HTTPException as exc:
+        # This endpoint bootstraps the browser's routing decisions.  Treat an
+        # invalid or unavailable auth provider as disabled here so startup
+        # can keep cloud-only APIs gated instead of beginning with a 503.
+        if exc.status_code != 503:
+            raise
+        return {
+            "auth_enabled": False,
+            "authenticated": False,
+            "google_enabled": False,
+            "cloud_sync_enabled": False,
+            "configuration_error": str(exc.detail),
+        }
     if not settings.enabled:
         return {
             "auth_enabled": False,
@@ -1660,18 +1674,32 @@ def get_me(request: Request, response: Response):
             "configuration_error": "Set PUBLIC_APP_URL before enabling cloud authentication in production.",
         }
     google_enabled = google_callback_is_available(request, settings)
+    try:
+        cloud_sync_enabled = persistence_is_configured()
+        persistence_configuration_error = None
+    except HTTPException as exc:
+        # Persistence is optional at browser bootstrap.  A malformed optional
+        # database setting must disable cloud sync here rather than prevent
+        # the client from learning which data paths are safe to call.
+        if exc.status_code != 503:
+            raise
+        cloud_sync_enabled = False
+        persistence_configuration_error = str(exc.detail)
     user = get_optional_current_user(request, response)
     csrf_token = ensure_csrf_token(request, response, settings) if user is not None else None
     if user is None:
-        return {
+        result = {
             "auth_enabled": True,
             "authenticated": False,
             "google_enabled": google_enabled,
-            "cloud_sync_enabled": persistence_is_configured(),
+            "cloud_sync_enabled": cloud_sync_enabled,
             "csrf_token": csrf_token,
         }
-    if not persistence_is_configured():
-        return {
+        if persistence_configuration_error:
+            result["configuration_error"] = persistence_configuration_error
+        return result
+    if not cloud_sync_enabled:
+        result = {
             "auth_enabled": True,
             "authenticated": True,
             "google_enabled": google_enabled,
@@ -1685,6 +1713,9 @@ def get_me(request: Request, response: Response):
                 "needs_onboarding": False,
             },
         }
+        if persistence_configuration_error:
+            result["configuration_error"] = persistence_configuration_error
+        return result
     return {
         "auth_enabled": True,
         "authenticated": True,
@@ -3456,14 +3487,43 @@ def get_gauges(
                 raise
             logger.info("Gauge portfolio context unavailable for %s: %s", ticker, exc.detail)
             position_source = []
+        except Exception as exc:
+            # Database and repository failures are optional portfolio
+            # enrichment for this public endpoint, so degrade the portfolio
+            # context instead of turning the complete gauge suite into 503.
+            logger.warning("Gauge portfolio context unavailable for %s: %s", ticker, exc)
+            position_source = []
         ticker_positions = [
             position for position in position_source
             if isinstance(position, dict) and str(position.get("ticker") or "").upper() == ticker
         ]
-        pg = portfolio_engine.compute_portfolio_greeks(ticker_positions, get_underlying_price=get_base_price)
+        try:
+            pg = portfolio_engine.compute_portfolio_greeks(
+                ticker_positions, get_underlying_price=get_base_price
+            )
+        except Exception as exc:
+            # A stale underlying quote must not make the public gauge suite
+            # unavailable.  Leave portfolio-risk gauges in their explicit
+            # unavailable state and retain the rest of the suite.
+            logger.warning("Gauge portfolio context calculation unavailable for %s: %s", ticker, exc)
+            pg = {
+                "net_delta": None,
+                "net_gamma": None,
+                "net_theta": None,
+                "net_vega": None,
+                "net_rho": None,
+                "positions": [],
+                "total_capital_at_risk": 0.0,
+                "largest_position_pct": 0.0,
+                "position_count": 0,
+            }
         portfolio_greeks = None
-        if pg["position_count"] > 0:
-            portfolio_greeks = {"net_theta": pg["net_theta"], "net_vega": pg["net_vega"], "net_gamma": pg["net_gamma"]}
+        if pg.get("position_count", 0) > 0:
+            portfolio_greeks = {
+                "net_theta": pg.get("net_theta"),
+                "net_vega": pg.get("net_vega"),
+                "net_gamma": pg.get("net_gamma"),
+            }
 
         try:
             chain_summary = get_options_chain_summary(ticker)

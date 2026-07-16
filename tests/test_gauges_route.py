@@ -27,3 +27,25 @@ class GaugeRouteTests(unittest.TestCase):
         self.assertEqual(result["ticker"], "NVDA")
         self.assertIn("bullish_score", result["gauges"])
         self.assertIn("confidence_score", result["gauges"])
+
+    def test_portfolio_enrichment_failure_keeps_public_gauges_available(self):
+        with patch("main.stats_engine.analyze_key_statistics", return_value={}), patch(
+            "main.get_cloud_user_or_legacy", return_value=None
+        ), patch("main.portfolio_engine.compute_portfolio_greeks", side_effect=RuntimeError("quote unavailable")), patch(
+            "main.get_options_chain_summary", return_value=None
+        ):
+            result = main.get_gauges(object(), Response(), ticker="NVDA")
+
+        self.assertEqual(result["ticker"], "NVDA")
+        self.assertEqual(result["portfolio_context"]["position_count"], 0)
+        self.assertIn("bullish_score", result["gauges"])
+
+    def test_cloud_repository_failure_keeps_public_gauges_available(self):
+        with patch("main.stats_engine.analyze_key_statistics", return_value={}), patch(
+            "main.get_cloud_user_or_legacy", side_effect=RuntimeError("database unavailable")
+        ), patch("main.get_options_chain_summary", return_value=None):
+            result = main.get_gauges(object(), Response(), ticker="NVDA")
+
+        self.assertEqual(result["ticker"], "NVDA")
+        self.assertEqual(result["portfolio_context"]["position_count"], 0)
+        self.assertIn("bullish_score", result["gauges"])

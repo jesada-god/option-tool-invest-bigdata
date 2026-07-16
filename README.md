@@ -70,7 +70,6 @@ Open `http://localhost:8000`.  Useful checks:
 ```powershell
 Invoke-RestMethod http://localhost:8000/healthz
 Invoke-RestMethod http://localhost:8000/readyz
-node --check tmp_fullscript.js
 python -m unittest discover -s tests -p "test_*.py"
 ```
 
