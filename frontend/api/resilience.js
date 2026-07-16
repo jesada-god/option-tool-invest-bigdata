@@ -216,7 +216,8 @@
             observer.observe({ type: 'paint', buffered: true });
             global.addEventListener('pagehide', () => observer.disconnect(), { once: true });
             const lcpObserver = new PerformanceObserver(entries => {
-                const latest = entries.getEntries().at(-1);
+                const samples = entries.getEntries();
+                const latest = samples[samples.length - 1];
                 if (latest) metrics.largestContentfulPaintMs = Math.round(latest.startTime);
             });
             lcpObserver.observe({ type: 'largest-contentful-paint', buffered: true });

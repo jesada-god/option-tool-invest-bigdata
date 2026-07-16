@@ -1,7 +1,10 @@
 #!/bin/sh
 set -eu
 
-python scripts/validate_production_config.py
+# Run as a module so the repository root stays on Python's import path.
+# Executing the file directly makes ``app`` unavailable in Render's release
+# environment, causing every production process to exit before Uvicorn starts.
+python -m scripts.validate_production_config
 
 # Render Free does not support preDeployCommand. Run migrations at process
 # start only when cloud persistence is intentionally configured. Alembic uses

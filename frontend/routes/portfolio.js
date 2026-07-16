@@ -1,4 +1,4 @@
-import { loadClassicAsset } from '/assets/utils/load-classic.js?v=20260716.3';
+import { loadClassicAsset } from '/assets/utils/load-classic.js?v=20260717.1';
 
 export default async () => {
     await loadClassicAsset('/assets/portfolio/terminal.js');

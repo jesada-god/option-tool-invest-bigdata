@@ -24,6 +24,13 @@
             return '';
         }
 
+        function readableAuthClientValidation(email, password, confirmation, isSignUp) {
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'Enter a valid email address.';
+            if (!password || password.length < 8) return 'Use at least 8 characters.';
+            if (isSignUp && password !== confirmation) return 'Password confirmation does not match.';
+            return '';
+        }
+
         function friendlyAuthError(error, email = '') {
             const raw = String(error?.message || error || 'Unable to complete authentication.');
             const normalized = raw.toLowerCase();
@@ -36,6 +43,20 @@
             if (/too many|rate limit|429/.test(normalized)) return 'เธฅเธญเธเนเธซเธกเนเธ เธฒเธขเธซเธฅเธฑเธเธชเธฑเธเธเธฃเธนเน เธฃเธฐเธเธเธเธณเธเธฑเธ”เธเธณเธเธงเธเธเธฃเธฑเนเธเน€เธเธทเนเธญเธเธงเธฒเธกเธเธฅเธญเธ”เธ เธฑเธข';
             if (/network|failed to fetch|temporarily unavailable/.test(normalized)) return 'เน€เธเธทเนเธญเธกเธ•เนเธญเธฃเธฐเธเธเนเธกเนเนเธ”เน เธเธฃเธธเธ“เธฒเธ•เธฃเธงเธเธชเธญเธเธญเธดเธเน€เธ—เธญเธฃเนเน€เธเนเธ•เนเธฅเนเธงเธฅเธญเธเนเธซเธกเน';
             return raw;
+        }
+
+        function readableAuthError(error, email = '') {
+            const raw = String(error?.message || error || 'Unable to complete authentication.');
+            const normalized = raw.toLowerCase();
+            if (/confirm|verify|not confirmed/.test(normalized)) {
+                showVerificationAction(email);
+                return 'Confirm your email, then sign in. You can request another confirmation message below.';
+            }
+            if (/already registered|already been registered|user already exists/.test(normalized)) return 'An account already exists for this email. Try signing in instead.';
+            if (/invalid login|invalid credentials|password/.test(normalized)) return 'The email or password is incorrect.';
+            if (/too many|rate limit|429/.test(normalized)) return 'Too many attempts. Please wait a moment and try again.';
+            if (/network|failed to fetch|temporarily unavailable/.test(normalized)) return 'The account service is temporarily unavailable. Please try again.';
+            return isReadableUiText(raw) ? raw : 'Unable to complete authentication.';
         }
 
         async function loadAuthSession() {
@@ -125,7 +146,7 @@
             const fullName = document.getElementById('auth-full-name')?.value.trim();
             const confirmation = document.getElementById('auth-confirm-password')?.value;
             const remember = Boolean(document.getElementById('auth-remember')?.checked);
-            const clientError = authClientValidation(email, password, confirmation, authFormMode === 'sign-up');
+            const clientError = readableAuthClientValidation(email, password, confirmation, authFormMode === 'sign-up');
             if (clientError) {
                 setAuthStatus(clientError, 'error');
                 return;
@@ -152,7 +173,7 @@
                 renderProfileAuthContent();
                 if (authState.authenticated && authState.user && !(authState.user.needs_onboarding || !authState.user.username)) closeProfileSheet();
             } catch (err) {
-                setAuthStatus(friendlyAuthError(err, email), 'error');
+                setAuthStatus(readableAuthError(err, email), 'error');
             } finally {
                 setAuthBusy(false);
             }
@@ -178,7 +199,7 @@
                 if (!res.ok) throw new Error(data.detail || data.message || 'Unable to send reset email.');
                 setAuthStatus(data.message || 'If this address exists, a reset link is on its way.', 'success');
             } catch (err) {
-                setAuthStatus(friendlyAuthError(err, email), 'error');
+                setAuthStatus(readableAuthError(err, email), 'error');
             } finally {
                 setAuthBusy(false);
             }
@@ -200,7 +221,7 @@
                 if (!res.ok) throw new Error(data.detail || data.message || 'Unable to send confirmation email.');
                 setAuthStatus(data.message || 'If this address needs confirmation, a new link is on its way.', 'success');
             } catch (err) {
-                setAuthStatus(friendlyAuthError(err, email), 'error');
+                setAuthStatus(readableAuthError(err, email), 'error');
             } finally {
                 setAuthBusy(false);
             }

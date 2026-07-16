@@ -166,7 +166,7 @@
         function setAuthStatus(message, tone = '') {
             const el = document.getElementById('profile-auth-status');
             if (!el) return;
-            el.textContent = message || '';
+            el.textContent = isReadableUiText(message) ? message : 'Please try again.';
             el.className = `pt-auth-status${tone ? ` ${tone}` : ''}`;
         }
 
@@ -271,6 +271,10 @@
             if (!form) return;
             form.querySelectorAll('input, button').forEach(control => { control.disabled = Boolean(isBusy); });
             const submit = document.getElementById('auth-submit-button');
+            if (submit && isBusy && !label) {
+                submit.textContent = 'Working securely…';
+                return;
+            }
             if (submit) submit.textContent = isBusy ? (label || 'Working securelyโ€ฆ') : (authFormMode === 'sign-up' ? 'Create account' : 'Sign in');
         }
 

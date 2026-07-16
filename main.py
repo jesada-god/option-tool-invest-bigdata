@@ -2465,8 +2465,14 @@ def build_industry_trends() -> list[dict[str, Any]]:
 
 
 @app.get("/api/industry-trends")
-def get_industry_trends():
-    return {"items": build_industry_trends(), "method": "daily move + relative volume + breadth"}
+async def get_industry_trends():
+    """Return activity rankings without letting a stalled provider tie up a worker."""
+    try:
+        items = await run_bounded_market_call(build_industry_trends)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("Industry-trends request timed out while waiting for market data")
+        items = []
+    return {"items": items, "method": "daily move + relative volume + breadth"}
 
 
 # ---------------------------------------------------------------------------
@@ -3129,8 +3135,7 @@ def delete_notification(event_id: int, request: Request, response: Response):
     except (AlertServiceValidationError, AlertResourceNotFoundError) as exc:
         raise_alert_service_error(exc)
 
-@app.get("/api/stats")
-def get_stats(ticker: str = "NVDA"):
+def _get_stats(ticker: str = "NVDA"):
     ticker = normalize_ticker(ticker)
     try:
         stock = yf.Ticker(ticker)
@@ -3173,8 +3178,17 @@ def get_stats(ticker: str = "NVDA"):
         return {"success": True, "data": [], "message": "No market data available"}
 
 
-@app.get("/api/indicators")
-def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Optional[float] = None):
+@app.get("/api/stats")
+async def get_stats(ticker: str = "NVDA"):
+    """Keep a stalled market-data provider from blocking the request worker."""
+    try:
+        return await run_bounded_market_call(_get_stats, ticker)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("Stats request timed out for %s", ticker)
+        return {"success": True, "data": [], "message": "Market data request timed out"}
+
+
+def _get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Optional[float] = None):
     """🎯 Smart Support/Resistance — วิเคราะห์จากหลายปัจจัยร่วมกัน (Wick Footprint,
     Base Accumulation, Psychological Levels, Volume Profile) แล้วให้คะแนน Strength 0-100
     ต่อโซน แทนที่ระบบ Pivot Point เดิมทั้งหมด
@@ -3268,8 +3282,20 @@ def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Opti
         "r2": resistances[1]["level"] if len(resistances) > 1 else None,
     })
 
-@app.get("/api/chart-data")
-def get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
+
+@app.get("/api/indicators")
+async def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Optional[float] = None):
+    try:
+        return await run_bounded_market_call(_get_indicators, ticker, timeframe, psych_step)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("Indicators request timed out for %s", ticker)
+        return {"ticker": normalize_ticker(ticker), "current_price": None,
+                "timeframe_requested": timeframe, "basis_timeframe": timeframe,
+                "engine": "smart_sr_v1", "status": "unavailable", "support": [],
+                "resistance": [], "closest_alert": None, "strongest_zone": None,
+                "s1": None, "s2": None, "r1": None, "r2": None}
+
+def _get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
     ticker = normalize_ticker(ticker)
     unavailable = {"success": True, "data": [], "message": "No market data available"}
     try:
@@ -3303,6 +3329,15 @@ def get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
     except Exception as exc:
         logger.warning("Chart data unavailable for %s: %s", ticker, exc)
         return unavailable
+
+
+@app.get("/api/chart-data")
+async def get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
+    try:
+        return await run_bounded_market_call(_get_chart_data, ticker, timeframe)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("Chart request timed out for %s", ticker)
+        return {"success": True, "data": [], "message": "Market data request timed out"}
 
 # 👜 Smart Option Pocket Endpoints
 # ---------------------------------------------------------------------------
@@ -3457,15 +3492,14 @@ def enrich_option_position(position: dict[str, Any]) -> dict[str, Any]:
     return pos
 
 
-@app.get("/api/ai-recommendation")
-def get_ai_recommendation(ticker: str = "NVDA"):
+def _get_ai_recommendation(ticker: str = "NVDA"):
     """Explainable, data-availability-aware AI terminal score for one symbol.
 
     This intentionally exposes the engine's inputs and confidence instead of
     presenting an unqualified trading recommendation.
     """
     ticker = normalize_ticker(ticker)
-    stats = get_stats(ticker)
+    stats = _get_stats(ticker)
     call_score = float(stats.get("call_score") or 50)
     put_score = float(stats.get("put_score") or 50)
     iv_rank = float(stats.get("iv_rank") or 50)
@@ -3500,6 +3534,19 @@ def get_ai_recommendation(ticker: str = "NVDA"):
         "reasoning": prediction.weighted_reasoning,
         "disclaimer": "Explainable analytical signal only, not investment advice or an order recommendation.",
     })
+
+
+@app.get("/api/ai-recommendation")
+async def get_ai_recommendation(ticker: str = "NVDA"):
+    ticker = normalize_ticker(ticker)
+    try:
+        return await run_bounded_market_call(_get_ai_recommendation, ticker)
+    except (asyncio.TimeoutError, TimeoutError):
+        logger.warning("AI recommendation request timed out for %s", ticker)
+        return {"ticker": ticker, "signal": "Neutral", "bullish_probability": 0,
+                "bearish_probability": 0, "neutral_probability": 100,
+                "confidence_score": 0, "factors_used": 0, "factors_total": 0,
+                "reasoning": [], "disclaimer": "Market data is temporarily unavailable."}
 
 
 @app.get("/api/company")

@@ -8,7 +8,7 @@
             home: 'home-section', watchlist: 'watchlist-row', search: 'search-input',
             analysis: 'tvchart', tools: 'tools-section', portfolio: 'portfolio-section', profile: 'profile-sheet',
         });
-        const ROUTE_MODULE_REVISION = '20260716.3';
+        const ROUTE_MODULE_REVISION = '20260717.1';
         const ROUTE_MODULE_IMPORTERS = Object.freeze({
             home: () => import(`/assets/routes/home.js?v=${ROUTE_MODULE_REVISION}`),
             watchlist: () => import(`/assets/routes/watchlist.js?v=${ROUTE_MODULE_REVISION}`),
@@ -87,8 +87,19 @@
             banner.setAttribute('aria-hidden', String(!visible));
         }
 
+        function requestedTerminalPath() {
+            const rawPath = (window.location.hash || '#/home').replace(/^#\/?/, '');
+            try {
+                return decodeURIComponent(rawPath).toLowerCase();
+            } catch (_) {
+                // A malformed percent escape in a shared URL must show the
+                // normal 404 state, never prevent the entire shell from booting.
+                return '';
+            }
+        }
+
         function currentTerminalRoute() {
-            const requested = decodeURIComponent((window.location.hash || '#/home').replace(/^#\/?/, '')).toLowerCase();
+            const requested = requestedTerminalPath();
             if (requested.startsWith('portfolio/')) return 'portfolio';
             return requested === 'watchlists' ? 'watchlist' : requested;
         }
@@ -128,7 +139,7 @@
         }
 
         function applyRouteFromLocation() {
-            const requested = decodeURIComponent((window.location.hash || '#/home').replace(/^#\/?/, '')).toLowerCase();
+            const requested = requestedTerminalPath();
             if (requested.startsWith('portfolio/')) {
                 const view = requested.slice('portfolio/'.length);
                 if (!['overview', 'stocks', 'options'].includes(view)) {

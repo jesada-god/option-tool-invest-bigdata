@@ -2,8 +2,21 @@
 //
 // These stay classic scripts deliberately: inline controls and existing
 // non-module assets share their global functions and state with this shell.
+// The Home route is lazy-loaded. Queue an eager search submission instead of
+// letting its inline form handler throw while that route is still downloading.
+window.searchStock = function queueInitialSearch() {
+    const retry = () => {
+        if (window.searchStock !== queueInitialSearch) {
+            window.searchStock();
+            return;
+        }
+        window.setTimeout(retry, 50);
+    };
+    window.setTimeout(retry, 0);
+};
+
 (async function loadApplicationShell() {
-    const APP_SHELL_REVISION = '20260716.3';
+    const APP_SHELL_REVISION = '20260717.1';
     const modules = [
         '../state/store',
         '../state/app',

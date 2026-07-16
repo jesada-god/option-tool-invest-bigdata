@@ -289,12 +289,3 @@
                 startAlertCenterPolling();
             }
         });
-
-        // --- Calculator desk -------------------------------------------------
-        // These inputs deliberately stay in the current page only.  The server
-        // validates every value again and no calculator value is persisted.
-        let activeToolsCalculator = 'position';
-        let toolsGrowthMode = 'compound';
-        let toolsCalculatorAbortController = null;
-        let toolsCalculatorRequestVersion = 0;
-

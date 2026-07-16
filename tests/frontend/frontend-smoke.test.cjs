@@ -26,7 +26,7 @@ test('classic asset loader loads each requested asset once', async () => {
     const second = loadClassicAsset('/assets/pages/home.js');
     assert.strictEqual(first, second);
     await first;
-    assert.deepEqual(appended, ['/assets/pages/home.js?v=20260716.3']);
+    assert.deepEqual(appended, ['/assets/pages/home.js?v=20260717.1']);
 });
 
 test('route smoke coverage includes every navigation destination and chunk', () => {
@@ -134,4 +134,44 @@ test('cache, route restoration, and service-worker guards remain enabled', () =>
     assert.match(worker, /const CACHE_NAME = 'quantora-shell-v\d+'/);
     assert.match(worker, /const response = await fetch\(event\.request\);/);
     assert.match(worker, /catch \(_\) \{\s+const cached = await caches\.match\(event\.request\);\s+if \(cached\) return cached;/);
+});
+
+test('portfolio local mode and iOS dialog fallbacks remain runtime-safe', () => {
+    const portfolio = read('frontend/portfolio/terminal.js');
+    const positionSubmit = portfolio.indexOf('async function submitPosition');
+    const submitLookup = portfolio.indexOf("const submit = document.querySelector('#pos-form .btn-submit');", positionSubmit);
+    const localBranch = portfolio.indexOf('if (!cloudWorkspaceEnabled())', positionSubmit);
+    assert.ok(submitLookup >= 0 && submitLookup < localBranch, 'local position saves must not reference submit before initialization');
+    assert.match(portfolio, /function showPortfolioDialog\(dialog\)/);
+    assert.match(portfolio, /typeof dialog\.showModal === 'function'/);
+    assert.doesNotMatch(read('frontend/state/portfolio.js'), /Object\.fromEntries/);
+    assert.doesNotMatch(read('frontend/state/watchlist.js'), /Object\.fromEntries/);
+});
+
+test('malformed route fragments remain recoverable', () => {
+    const router = read('frontend/app-shell/router.js');
+    assert.match(router, /function requestedTerminalPath\(\)/);
+    assert.match(router, /catch \(_\) \{[\s\S]*return '';/);
+});
+
+test('corrupted translation strings cannot be rendered as UI copy', () => {
+    const theme = read('frontend/app-shell/theme.js');
+    const auth = read('frontend/app-shell/auth.js');
+    assert.match(theme, /function isReadableUiText\(value\)/);
+    assert.match(theme, /!\/\[\\u20ac\\ufffd\]\/i\.test\(value\)/);
+    assert.match(auth, /function readableAuthClientValidation/);
+    assert.match(auth, /function readableAuthError/);
+});
+
+test('browser-delivered text assets are strict UTF-8', () => {
+    const decoder = new TextDecoder('utf-8', { fatal: true });
+    const assets = [
+        'index.html', 'service-worker.js', 'app.webmanifest',
+        ...fs.readdirSync(path.join(root, 'frontend'), { recursive: true })
+            .filter(file => file.endsWith('.js'))
+            .map(file => path.join('frontend', file)),
+    ];
+    for (const asset of assets) {
+        assert.doesNotThrow(() => decoder.decode(fs.readFileSync(path.join(root, asset))), asset);
+    }
 });

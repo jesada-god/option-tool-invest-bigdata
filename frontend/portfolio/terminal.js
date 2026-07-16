@@ -79,11 +79,15 @@
             const name = document.getElementById('portfolio-settings-create')?.value.trim();
             const currency = document.getElementById('portfolio-settings-create-currency')?.value.trim().toUpperCase() || 'USD';
             if (!name) return;
-            const response = await authFetch('/api/portfolios', { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ name, currency }) });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) { window.alert(data.detail || 'Portfolio could not be created.'); return; }
-            cloudWorkspace.selectedPortfolioId = cloudWorkspaceId(data.portfolio && data.portfolio.id);
-            await loadCloudWorkspace(); await loadPortfolioModuleData();
+            try {
+                const response = await authFetch('/api/portfolios', { method: 'POST', headers: authHeaders(true), body: JSON.stringify({ name, currency }) });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Portfolio could not be created.');
+                cloudWorkspace.selectedPortfolioId = cloudWorkspaceId(data.portfolio && data.portfolio.id);
+                await loadCloudWorkspace(); await loadPortfolioModuleData();
+            } catch (error) {
+                showTerminalToast(error.message || 'Portfolio could not be created.', 'error');
+            }
         }
 
         async function savePortfolioSettings() {
@@ -91,19 +95,27 @@
             const name = document.getElementById('portfolio-settings-name')?.value.trim();
             const currency = document.getElementById('portfolio-settings-currency')?.value.trim().toUpperCase();
             if (!name) return;
-            const response = await authFetch(`/api/portfolios/${selected.id}`, { method: 'PATCH', headers: authHeaders(true), body: JSON.stringify({ name, currency }) });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) { window.alert(data.detail || 'Portfolio could not be updated.'); return; }
-            await loadCloudWorkspace(); await loadPortfolioModuleData();
+            try {
+                const response = await authFetch(`/api/portfolios/${selected.id}`, { method: 'PATCH', headers: authHeaders(true), body: JSON.stringify({ name, currency }) });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Portfolio could not be updated.');
+                await loadCloudWorkspace(); await loadPortfolioModuleData();
+            } catch (error) {
+                showTerminalToast(error.message || 'Portfolio could not be updated.', 'error');
+            }
         }
 
         async function archivePortfolioFromModule() {
             const selected = selectedCloudPortfolio(); if (!selected || selected.is_default) return;
             if (!window.confirm(`Archive portfolio “${selected.name}”? Holdings and history will remain available in the archive.`)) return;
-            const response = await authFetch(`/api/portfolios/${selected.id}`, { method: 'DELETE', headers: authHeaders() });
-            const data = await response.json().catch(() => ({}));
-            if (!response.ok) { window.alert(data.detail || 'Portfolio could not be archived.'); return; }
-            await loadCloudWorkspace(); await loadPortfolioModuleData();
+            try {
+                const response = await authFetch(`/api/portfolios/${selected.id}`, { method: 'DELETE', headers: authHeaders() });
+                const data = await response.json().catch(() => ({}));
+                if (!response.ok) throw new Error(data.detail || 'Portfolio could not be archived.');
+                await loadCloudWorkspace(); await loadPortfolioModuleData();
+            } catch (error) {
+                showTerminalToast(error.message || 'Portfolio could not be archived.', 'error');
+            }
         }
 
         // --- Portfolio UX layer: presentation only; existing APIs remain authoritative. ---
@@ -352,19 +364,39 @@
             if (!dialog.dataset.focusRestore) { dialog.dataset.focusRestore = 'true'; dialog.addEventListener('close', () => { portfolioDialogReturnFocus?.focus?.({ preventScroll: true }); portfolioDialogReturnFocus = null; }); }
             portfolioDialogReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
             portfolioDialogMode = 'create'; document.getElementById('portfolio-dialog-form').reset(); document.getElementById('portfolio-dialog-type').disabled = false; document.getElementById('portfolio-dialog-title').textContent = 'Create portfolio'; document.getElementById('portfolio-dialog-submit').textContent = 'Create'; document.getElementById('portfolio-dialog-archive').style.display = 'none'; document.getElementById('portfolio-dialog-currency').value = 'USD'; document.getElementById('portfolio-dialog-status').textContent = '';
-            dialog.showModal(); document.getElementById('portfolio-dialog-name').focus();
+            showPortfolioDialog(dialog); document.getElementById('portfolio-dialog-name').focus();
         }
         function openPortfolioEditDialog() {
             const selected = portfolioSelectedItem(); if (!selected) { openPortfolioDialog(); return; }
             const dialog = document.getElementById('portfolio-dialog'); if (!dialog.dataset.focusRestore) { dialog.dataset.focusRestore = 'true'; dialog.addEventListener('close', () => { portfolioDialogReturnFocus?.focus?.({ preventScroll: true }); portfolioDialogReturnFocus = null; }); } portfolioDialogReturnFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null; const presentation = portfolioPresentationFor(selected.id); portfolioDialogMode = 'edit';
-            document.getElementById('portfolio-dialog-title').textContent = 'Manage portfolio'; document.getElementById('portfolio-dialog-submit').textContent = 'Save changes'; document.getElementById('portfolio-dialog-name').value = selected.name; document.getElementById('portfolio-dialog-currency').value = selected.currency || 'USD'; document.getElementById('portfolio-dialog-description').value = presentation.description || ''; document.getElementById('portfolio-dialog-icon').value = presentation.icon || '▣'; document.getElementById('portfolio-dialog-type').value = portfolioModuleView === 'options' ? 'options' : 'stocks'; document.getElementById('portfolio-dialog-type').disabled = true; document.getElementById('portfolio-dialog-archive').style.display = selected.is_default ? 'none' : ''; document.getElementById('portfolio-dialog-status').textContent = ''; dialog.showModal(); document.getElementById('portfolio-dialog-name').focus();
+            document.getElementById('portfolio-dialog-title').textContent = 'Manage portfolio'; document.getElementById('portfolio-dialog-submit').textContent = 'Save changes'; document.getElementById('portfolio-dialog-name').value = selected.name; document.getElementById('portfolio-dialog-currency').value = selected.currency || 'USD'; document.getElementById('portfolio-dialog-description').value = presentation.description || ''; document.getElementById('portfolio-dialog-icon').value = presentation.icon || '▣'; document.getElementById('portfolio-dialog-type').value = portfolioModuleView === 'options' ? 'options' : 'stocks'; document.getElementById('portfolio-dialog-type').disabled = true; document.getElementById('portfolio-dialog-archive').style.display = selected.is_default ? 'none' : ''; document.getElementById('portfolio-dialog-status').textContent = ''; showPortfolioDialog(dialog); document.getElementById('portfolio-dialog-name').focus();
+        }
+        function showPortfolioDialog(dialog) {
+            if (typeof dialog.showModal === 'function') {
+                dialog.showModal();
+                return;
+            }
+            // HTMLDialogElement was added to mobile Safari later than the
+            // rest of the APIs used by this app. Keep portfolio management
+            // usable on those versions with an accessible in-page fallback.
+            dialog.dataset.fallback = 'true';
+            dialog.setAttribute('open', '');
+            dialog.setAttribute('role', 'dialog');
+            document.body.classList.add('portfolio-dialog-fallback-open');
         }
         function closePortfolioDialog() {
             document.getElementById('portfolio-dialog-type').disabled = false;
             const dialog = document.getElementById('portfolio-dialog');
             // The one-time `close` listener restores focus. Restoring it here
             // as well caused the same focus transition to run twice.
-            if (dialog?.open) dialog.close();
+            if (dialog?.open && typeof dialog.close === 'function') dialog.close();
+            else if (dialog?.open) {
+                dialog.removeAttribute('open');
+                delete dialog.dataset.fallback;
+                document.body.classList.remove('portfolio-dialog-fallback-open');
+                portfolioDialogReturnFocus?.focus?.({ preventScroll: true });
+                portfolioDialogReturnFocus = null;
+            }
             else {
                 portfolioDialogReturnFocus?.focus?.({ preventScroll: true });
                 portfolioDialogReturnFocus = null;
@@ -657,6 +689,7 @@
             const payload = positionPayloadFromForm();
             const validationMessage = validatePositionPayload(payload);
             if (validationMessage) { setPositionFormStatus(validationMessage, 'error'); return; }
+            const submit = document.querySelector('#pos-form .btn-submit');
             if (!cloudWorkspaceEnabled()) {
                 const saved = {
                     ...payload,
@@ -678,7 +711,6 @@
             }
             const portfolioId = cloudWorkspaceId(document.getElementById('form-portfolio-id')?.value);
             if (!editingPositionId && cloudWorkspaceEnabled() && portfolioId) payload.portfolio_id = portfolioId;
-            const submit = document.querySelector('#pos-form .btn-submit');
             setTerminalButtonBusy(submit, true, editingPositionId ? 'Saving…' : 'Opening…');
             setPositionFormStatus(editingPositionId ? 'กำลังบันทึกการแก้ไข…' : 'กำลังเปิดสัญญา…');
             try {

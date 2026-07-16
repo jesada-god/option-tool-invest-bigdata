@@ -1,3 +1,10 @@
+        // Tool state belongs to this lazy route. Keeping it here lets a direct
+        // #/tools load work without first visiting the market-analysis route.
+        let activeToolsCalculator = 'position';
+        let toolsGrowthMode = 'compound';
+        let toolsCalculatorAbortController = null;
+        let toolsCalculatorRequestVersion = 0;
+
         function toolsCalculatorMarketPrice() {
             const live = Number(currentLivePrice);
             if (Number.isFinite(live) && live > 0) return live;

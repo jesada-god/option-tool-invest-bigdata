@@ -892,8 +892,11 @@ def _definition_for_evaluation(value: Alert | AlertDefinition | Mapping[str, Any
     return normalize_alert_definition(value)
 
 
-def _state_datetime(value: Alert | Mapping[str, Any], field: str) -> datetime | None:
-    raw = getattr(value, field, None) if isinstance(value, Alert) else value.get(field)
+def _state_datetime(value: Alert | AlertDefinition | Mapping[str, Any], field: str) -> datetime | None:
+    # Normalized definitions intentionally do not carry persisted trigger
+    # state. Treat them like a fresh alert rather than assuming every
+    # non-ORM value is a mapping and raising during evaluation.
+    raw = getattr(value, field, None) if isinstance(value, (Alert, AlertDefinition)) else value.get(field)
     if raw is None:
         return None
     try:

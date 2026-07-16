@@ -15,9 +15,19 @@
             } catch (_) { return fallback; }
         }
 
+        function isReadableUiText(value) {
+            // Older source imports left a handful of Thai strings double-
+            // decoded (for example, mixing Thai code points with a euro sign).
+            // Do not render that mojibake; the supplied English fallback is
+            // always preferable and keeps the UI readable until a translated
+            // string has been verified.
+            return typeof value === 'string' && !/[\u20ac\ufffd]/i.test(value);
+        }
+
         function t(key, fallback) {
             const language = userPreferences.language === 'th' ? 'th' : 'en';
-            return UI_TRANSLATIONS[language]?.[key] || fallback || key;
+            const translated = UI_TRANSLATIONS[language]?.[key];
+            return isReadableUiText(translated) ? translated : (fallback || key);
         }
 
         function analysisText(key, fallback) {
@@ -35,7 +45,10 @@
                 signal: 'เธชเธฑเธเธเธฒเธ“', confidence: 'เธเธงเธฒเธกเน€เธเธทเนเธญเธกเธฑเนเธ', bullish: 'เนเธญเธเธฒเธชเธเธถเนเธ', bearish: 'เนเธญเธเธฒเธชเธฅเธ', closest_weekly_sr: 'เนเธเธงเธฃเธฑเธ/เธ•เนเธฒเธเธฃเธฒเธขเธชเธฑเธเธ”เธฒเธซเนเธ—เธตเนเนเธเธฅเนเธชเธธเธ”', distance: 'เธฃเธฐเธขเธฐเธซเนเธฒเธ',
                 unavailable: 'เธเนเธญเธกเธนเธฅเธเธตเนเธขเธฑเธเนเธกเนเธเธฃเนเธญเธกเนเธเนเธเธฒเธ เธเธฃเธธเธ“เธฒเธฅเธญเธเนเธซเธกเนเธญเธตเธเธเธฃเธฑเนเธ',
             };
-            return userPreferences.language === 'th' ? (thai[key] || fallback || key) : (fallback || key);
+            const translated = thai[key];
+            return userPreferences.language === 'th' && isReadableUiText(translated)
+                ? translated
+                : (fallback || key);
         }
 
         function formatAnalysisDate(value) {
