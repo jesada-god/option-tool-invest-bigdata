@@ -79,6 +79,13 @@
             if (isNetworkOnline && typeof flushSafeTerminalActions === 'function') void flushSafeTerminalActions();
         }
 
+        function setCloudSyncWarning(visible) {
+            const banner = document.getElementById('cloud-sync-warning');
+            if (!banner) return;
+            banner.classList.toggle('is-visible', Boolean(visible));
+            banner.setAttribute('aria-hidden', String(!visible));
+        }
+
         function currentTerminalRoute() {
             const requested = decodeURIComponent((window.location.hash || '#/home').replace(/^#\/?/, '')).toLowerCase();
             if (requested.startsWith('portfolio/')) return 'portfolio';

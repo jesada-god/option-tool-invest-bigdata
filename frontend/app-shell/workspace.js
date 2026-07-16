@@ -94,7 +94,7 @@
         let cloudWorkspaceLoadPromise = null;
 
         function cloudWorkspaceEnabled() {
-            return Boolean(authState.authenticated && authState.cloudSyncEnabled);
+            return Boolean(authState.authenticated && authState.cloudSyncEnabled && !authState.configurationError);
         }
 
         function cloudWorkspaceId(value) {

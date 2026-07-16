@@ -20,7 +20,7 @@
         });
 
         function alertCenterEnabled() {
-            return Boolean(authState.authenticated && authState.cloudSyncEnabled);
+            return Boolean(authState.authenticated && authState.cloudSyncEnabled && !authState.configurationError);
         }
 
         function alertCenterTicker(value = currentTicker) {

@@ -43,7 +43,7 @@
             const res = await authFetch('/api/auth/me', { cache: 'no-store' });
             if (sessionEpoch !== authSessionEpoch) return;
             if (res.status === 404) {
-                authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
+                authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, configurationError: null, csrfToken: null };
             } else if (!res.ok) {
                 const responseBody = await res.text();
                 const error = new Error(`Account session request failed: HTTP ${res.status} ${res.statusText}.`);
@@ -55,6 +55,9 @@
             } else {
                 const data = await res.json();
                 if (sessionEpoch !== authSessionEpoch) return;
+                const configurationError = typeof data.configuration_error === 'string' && data.configuration_error.trim()
+                    ? data.configuration_error.trim()
+                    : null;
                 authState = {
                     ...authState,
                     configured: Boolean(data.auth_enabled ?? data.configured),
@@ -66,7 +69,12 @@
                     googleEnabled: typeof data.google_enabled === 'boolean'
                         ? data.google_enabled
                         : authState.googleEnabled,
-                    cloudSyncEnabled: Boolean(data.cloud_sync_enabled),
+                    // An authenticated session remains valid when optional
+                    // cloud provisioning is degraded. Keep the application in
+                    // local mode even if a faulty server response says both
+                    // cloud sync and configuration_error are enabled.
+                    cloudSyncEnabled: Boolean(data.cloud_sync_enabled) && !configurationError,
+                    configurationError,
                     csrfToken: data.csrf_token || null,
                 };
             }
@@ -74,24 +82,37 @@
             // A renewed session can belong to a different account. Clear the
             // previous account's inbox before any new profile UI is rendered.
             resetAlertCenter();
-            renderProfileAuthContent();
-            if (authState.authenticated && authState.cloudSyncEnabled) {
-                await Promise.all([
-                    loadCloudPreferences(),
-                    loadCloudFavorites(),
-                    loadRecentViewed(),
-                    loadCloudWorkspace(),
-                ]);
-                if (sessionEpoch !== authSessionEpoch) return;
-                void refreshAlertCenter({ quiet: true });
-                startAlertCenterPolling();
-            } else {
+            if (authState.authenticated && authState.cloudSyncEnabled && !authState.configurationError) {
+                try {
+                    await Promise.all([
+                        loadCloudPreferences(),
+                        loadCloudFavorites(),
+                        loadRecentViewed(),
+                        loadCloudWorkspace(),
+                    ]);
+                    if (sessionEpoch !== authSessionEpoch) return;
+                    void refreshAlertCenter({ quiet: true });
+                    startAlertCenterPolling();
+                } catch (error) {
+                    // Cloud data is optional. A failed initial sync must not
+                    // turn a valid authenticated session into a fatal boot.
+                    reportQuantoraError(error, { area: 'cloud-bootstrap' });
+                    authState = {
+                        ...authState,
+                        cloudSyncEnabled: false,
+                        configurationError: 'Cloud sync is temporarily unavailable.',
+                    };
+                }
+            }
+            if (!authState.authenticated || !authState.cloudSyncEnabled || authState.configurationError) {
                 resetCloudWorkspace();
                 favoriteTickers = new Set();
                 updateFavoriteButton();
                 renderRecentViewed(sessionRecentViewed);
             }
             if (sessionEpoch !== authSessionEpoch) return;
+            setCloudSyncWarning(Boolean(authState.authenticated && authState.configurationError));
+            renderProfileAuthContent();
             setAuthGate(authState.configured === true && !authState.authenticated && !authState.recoveryMode);
             if (authState.authenticated && authState.user && (authState.user.needs_onboarding || !authState.user.username)) openProfileSheet();
             if (typeof restoreTerminalWorkspaceAfterLogin === 'function') void restoreTerminalWorkspaceAfterLogin();
@@ -209,7 +230,8 @@
                 await authFetch('/api/auth/logout', { method: 'POST', headers: authHeaders(true) });
             } finally {
                 authSessionEpoch += 1;
-                authState = { configured: authState.configured, authenticated: false, user: null, googleEnabled: authState.googleEnabled, cloudSyncEnabled: false, csrfToken: null, recoveryMode: false };
+                authState = { configured: authState.configured, authenticated: false, user: null, googleEnabled: authState.googleEnabled, cloudSyncEnabled: false, configurationError: null, csrfToken: null, recoveryMode: false };
+                setCloudSyncWarning(false);
                 resetCloudWorkspace();
                 resetAlertCenter();
                 watchlist = [];

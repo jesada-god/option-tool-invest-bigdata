@@ -65,6 +65,58 @@ test('bootstrap identifies and rethrows every guarded startup failure', () => {
     assert.match(boot, /throw error;/);
 });
 
+test('an authenticated cloud-sync degradation remains a non-fatal local mode', () => {
+    const auth = read('frontend/app-shell/auth.js');
+    const router = read('frontend/app-shell/router.js');
+    const workspace = read('frontend/app-shell/workspace.js');
+    const page = read('index.html');
+    assert.match(auth, /cloudSyncEnabled: Boolean\(data\.cloud_sync_enabled\) && !configurationError/);
+    assert.match(auth, /setCloudSyncWarning\(Boolean\(authState\.authenticated && authState\.configurationError\)\)/);
+    assert.match(auth, /configurationError: 'Cloud sync is temporarily unavailable\.'/);
+    assert.match(router, /function setCloudSyncWarning\(visible\)/);
+    assert.match(workspace, /authState\.cloudSyncEnabled && !authState\.configurationError/);
+    assert.match(page, /id="cloud-sync-warning"/);
+});
+
+test('an authenticated /api/auth/me configuration error completes in local mode', async () => {
+    const authSource = read('frontend/app-shell/auth.js');
+    const createHarness = new Function('response', `
+        let authState = { configured: null, authenticated: false, user: null, googleEnabled: false, cloudSyncEnabled: false, configurationError: null, csrfToken: null, recoveryMode: false };
+        let authSessionEpoch = 0;
+        let favoriteTickers = new Set(['OLD']);
+        let sessionRecentViewed = [];
+        const calls = [];
+        const authFetch = async () => response;
+        const resetAlertCenter = () => calls.push('resetAlertCenter');
+        const resetCloudWorkspace = () => calls.push('resetCloudWorkspace');
+        const updateFavoriteButton = () => calls.push('updateFavoriteButton');
+        const renderRecentViewed = () => calls.push('renderRecentViewed');
+        const setCloudSyncWarning = value => calls.push(['setCloudSyncWarning', value]);
+        const renderProfileAuthContent = () => calls.push('renderProfileAuthContent');
+        const setAuthGate = value => calls.push(['setAuthGate', value]);
+        ${authSource}
+        return { loadAuthSession, getAuth: () => authState, calls };
+    `);
+    const harness = createHarness({
+        status: 200,
+        ok: true,
+        json: async () => ({
+            auth_enabled: true,
+            authenticated: true,
+            cloud_sync_enabled: false,
+            configuration_error: 'Cloud profile is temporarily unavailable.',
+            user: { id: 'user-1', username: 'quantora' },
+        }),
+    });
+
+    await harness.loadAuthSession();
+    assert.equal(harness.getAuth().authenticated, true);
+    assert.equal(harness.getAuth().cloudSyncEnabled, false);
+    assert.equal(harness.getAuth().configurationError, 'Cloud profile is temporarily unavailable.');
+    assert.ok(harness.calls.includes('resetCloudWorkspace'));
+    assert.ok(harness.calls.some(call => Array.isArray(call) && call[0] === 'setCloudSyncWarning' && call[1] === true));
+});
+
 test('cache, route restoration, and service-worker guards remain enabled', () => {
     const cache = read('frontend/api/cache.js');
     const router = read('frontend/app-shell/router.js');

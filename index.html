@@ -2352,6 +2352,7 @@
             box-shadow: 0 16px 38px rgba(0, 0, 0, .35); backdrop-filter: blur(16px); font-size: 12px;
         }
         .pt-network-banner.is-visible { display: block; }
+        .pt-cloud-sync-warning { top: calc(max(10px, env(safe-area-inset-top)) + 52px); border-color: rgba(120, 185, 255, .42); color: #d7ebff; background: rgba(15, 42, 72, .94); }
         .pt-auth-gate, .pt-system-screen {
             position: fixed; z-index: 610; inset: 0; display: none; place-items: center; padding: 18px;
             background: rgba(4, 6, 17, .68); backdrop-filter: blur(10px);
@@ -2625,6 +2626,7 @@
 <body>
     <a class="skip-link" href="#main-content">Skip to main content</a>
     <aside id="network-banner" class="pt-network-banner" role="status" aria-live="polite">You’re offline. Showing the last available application shell; live prices and cloud sync will resume when the connection returns.</aside>
+    <aside id="cloud-sync-warning" class="pt-network-banner pt-cloud-sync-warning" role="status" aria-live="polite" aria-hidden="true">Cloud sync is temporarily unavailable. You can continue using charts, watchlists, and your local workspace.</aside>
     <section id="auth-gate" class="pt-auth-gate" aria-live="polite" aria-hidden="true">
         <div class="pt-system-card">
             <div class="pt-system-mark" aria-hidden="true">✦</div>
