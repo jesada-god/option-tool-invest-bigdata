@@ -59,7 +59,11 @@ window.searchStock = function queueInitialSearch() {
     }
 
     try {
-        for (const module of modules) await loadClassicModule(module);
+        // Script-inserted classic scripts with async=false retain insertion
+        // order, but their downloads can run together.  The previous await
+        // loop turned this dependency chain into a 24-request network
+        // waterfall before the app could bootstrap.
+        await Promise.all(modules.map(loadClassicModule));
         await bootTerminal();
     } catch (error) {
         window.reportQuantoraError?.(error, { area: 'shell-loader' });

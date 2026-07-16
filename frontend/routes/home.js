@@ -1,6 +1,7 @@
 import { loadClassicAsset } from '/assets/utils/load-classic.js?v=20260717.3';
 
 export default async () => {
+    await loadClassicAsset('/assets/vendor/lightweight-charts.standalone.production.js');
     await loadClassicAsset('/assets/components/indicators.js');
     await loadClassicAsset('/assets/analysis/market-terminal.js');
     await loadClassicAsset('/assets/services/live-price.js');

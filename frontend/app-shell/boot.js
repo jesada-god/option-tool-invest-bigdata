@@ -78,9 +78,10 @@
                     // single deployed revision.
                     window.location.reload();
                 }, { once: true });
-                navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).then(registration => {
-                    return registration.update();
-                }).catch(error => {
+                // register() already checks for a new worker. A second,
+                // immediate check issued another request during every cold
+                // boot.
+                navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).catch(error => {
                     reportQuantoraError(error, { area: 'service-worker' });
                 });
             }

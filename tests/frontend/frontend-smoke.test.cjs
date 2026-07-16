@@ -29,6 +29,13 @@ test('classic asset loader loads each requested asset once', async () => {
     assert.deepEqual(appended, ['/assets/pages/home.js?v=20260717.3']);
 });
 
+test('shell loader schedules ordered classic scripts without a network waterfall', () => {
+    const shell = read('frontend/app-shell.js');
+    assert.match(shell, /script\.async = false/);
+    assert.match(shell, /await Promise\.all\(modules\.map\(loadClassicModule\)\)/);
+    assert.doesNotMatch(shell, /for \(const module of modules\) await loadClassicModule/);
+});
+
 test('route smoke coverage includes every navigation destination and chunk', () => {
     const router = read('frontend/app-shell/router.js');
     const expected = ['home', 'watchlist', 'search', 'analysis', 'tools', 'portfolio'];
@@ -134,6 +141,12 @@ test('cache, route restoration, and service-worker guards remain enabled', () =>
     assert.match(worker, /const CACHE_NAME = 'quantora-shell-v\d+'/);
     assert.match(worker, /const response = await fetch\(event\.request\);/);
     assert.match(worker, /catch \(_\) \{\s+const cached = await caches\.match\(event\.request\);\s+if \(cached\) return cached;/);
+    assert.doesNotMatch(worker, /cache\.addAll/);
+    assert.doesNotMatch(read('frontend/app-shell/boot.js'), /registration\.update\(\)/);
+    assert.doesNotMatch(read('index.html'), /lightweight-charts\.standalone\.production\.js/);
+    for (const route of ['home', 'analysis']) {
+        assert.match(read(`frontend/routes/${route}.js`), /loadClassicAsset\('\/assets\/vendor\/lightweight-charts\.standalone\.production\.js'\)/);
+    }
 });
 
 test('portfolio local mode and iOS dialog fallbacks remain runtime-safe', () => {

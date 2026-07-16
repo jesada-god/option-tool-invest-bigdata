@@ -26,16 +26,26 @@ class TTLCache:
     def __init__(self):
         self._store: dict[Any, tuple[float, Any]] = {}
         self._lock = threading.Lock()
+        # A cache miss can be much more expensive than a normal request (for
+        # example, a yfinance round-trip).  Keep one producer per key so a
+        # burst of identical requests does not stampede the upstream API.
+        self._inflight: dict[Any, _InFlight] = {}
+        self._hits = 0
+        self._misses = 0
+        self._coalesced = 0
 
     def get(self, key):
         with self._lock:
             entry = self._store.get(key)
             if entry is None:
+                self._misses += 1
                 return None, False
             expires_at, value = entry
             if time.time() >= expires_at:
                 del self._store[key]
+                self._misses += 1
                 return None, False
+            self._hits += 1
             return value, True
 
     def set(self, key, value, ttl_seconds: float):
@@ -52,7 +62,39 @@ class TTLCache:
 
     def stats(self):
         with self._lock:
-            return {"entries": len(self._store)}
+            return {
+                "entries": len(self._store),
+                "inflight": len(self._inflight),
+                "hits": self._hits,
+                "misses": self._misses,
+                "coalesced": self._coalesced,
+            }
+
+    def claim_inflight(self, key: Any) -> tuple["_InFlight", bool]:
+        """Return the single producer for a missing key, or its waiter."""
+        with self._lock:
+            active = self._inflight.get(key)
+            if active is not None:
+                self._coalesced += 1
+                return active, False
+            active = _InFlight()
+            self._inflight[key] = active
+            return active, True
+
+    def complete_inflight(self, key: Any, active: "_InFlight") -> None:
+        with self._lock:
+            if self._inflight.get(key) is active:
+                del self._inflight[key]
+            active.done.set()
+
+
+class _InFlight:
+    """Result shared by requests coalesced behind one cache miss."""
+
+    def __init__(self):
+        self.done = threading.Event()
+        self.value: Any = None
+        self.error: BaseException | None = None
 
 
 _global_cache = TTLCache()
@@ -74,9 +116,22 @@ def ttl_cache(ttl_seconds: float = 60.0):
             value, hit = _global_cache.get(key)
             if hit:
                 return value
-            value = fn(*args, **kwargs)
-            _global_cache.set(key, value, ttl_seconds)
-            return value
+            active, is_producer = _global_cache.claim_inflight(key)
+            if not is_producer:
+                active.done.wait()
+                if active.error is not None:
+                    raise active.error
+                return active.value
+            try:
+                value = fn(*args, **kwargs)
+                _global_cache.set(key, value, ttl_seconds)
+                active.value = value
+                return value
+            except BaseException as exc:
+                active.error = exc
+                raise
+            finally:
+                _global_cache.complete_inflight(key, active)
         wrapper.cache_clear = lambda: _global_cache.clear(prefix=f"({fn.__module__!r}")
         return wrapper
     return decorator

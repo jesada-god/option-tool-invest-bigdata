@@ -2,6 +2,7 @@ from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, 
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
 from fastapi.encoders import jsonable_encoder
+from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 import asyncio
 import contextlib
@@ -184,6 +185,10 @@ FRONTEND_ROUTE_MODULES = frozenset({"home", "watchlist", "analysis", "tools", "p
 FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI()
+# index.html and the chart library are large text payloads. Compression is
+# negotiated by the client and keeps the uncompressed response untouched for
+# clients that do not support it.
+app.add_middleware(GZipMiddleware, minimum_size=1_000, compresslevel=6)
 logger = logging.getLogger("portfolio_terminal")
 
 
