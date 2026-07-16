@@ -1,0 +1,2 @@
+import { useEffect, useState } from 'react'; import { message } from './api';
+export function useRequest<T>(key: string, load: () => Promise<T>) { const [state, setState] = useState<{loading:boolean;data?:T;error?:string}>({loading:true}); useEffect(() => { let live = true; setState({ loading:true }); load().then(data => live && setState({ loading:false, data })).catch(error => live && setState({loading:false,error:message(error)})); return () => { live=false; }; }, [key]); return state; }
