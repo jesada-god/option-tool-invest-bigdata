@@ -406,7 +406,7 @@
             host.appendChild(head);
 
             if (alertCenter.loading && !alertCenter.alerts.length && !alertCenter.notifications.length) {
-                host.appendChild(alertCenterElement('p', 'pt-alert-status', 'Loading your alert rules and inboxโ€ฆ'));
+                host.appendChild(alertCenterElement('p', 'pt-alert-status', 'Loading your alert rules and inbox…'));
                 return;
             }
             if (alertCenter.error && !alertCenter.alerts.length && !alertCenter.notifications.length) {
@@ -492,7 +492,7 @@
                 setAlertCenterStatus('Sign in with cloud sync enabled to manage alerts.', 'error');
                 return false;
             }
-            setAlertCenterStatus('Saving alert changeโ€ฆ');
+            setAlertCenterStatus('Saving alert change…');
             try {
                 const response = await authFetch(url, init);
                 await alertCenterResponse(response, 'Alert change was not accepted.');
@@ -522,7 +522,7 @@
                 return;
             }
             if (!Number.isInteger(cooldownNumber) || cooldownNumber < 0 || cooldownNumber > 604800) {
-                setAlertCenterStatus('Cooldown must be a whole number of seconds (0โ€“604800).', 'error');
+                setAlertCenterStatus('Cooldown must be a whole number of seconds (0–604800).', 'error');
                 return;
             }
             const payload = {

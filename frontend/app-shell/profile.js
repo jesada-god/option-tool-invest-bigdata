@@ -70,8 +70,8 @@
                 if (email) email.textContent = authState.configured === false ? 'Cloud authentication is not configured' : 'Secure session required';
                 const greeting = document.getElementById('home-welcome-title');
                 const greetingCopy = document.getElementById('home-welcome-copy');
-                if (greeting) greeting.innerHTML = userPreferences.language === 'th' ? 'เธขเธดเธเธ”เธตเธ•เนเธญเธเธฃเธฑเธเธชเธนเน <span>Quantora AI</span>' : 'Welcome to <span>Quantora AI</span>';
-                if (greetingCopy) greetingCopy.textContent = userPreferences.language === 'th' ? 'เธ”เธนเธเนเธญเธกเธนเธฅเธ•เธฅเธฒเธ” เธงเธดเน€เธเธฃเธฒเธฐเธซเนเธซเธธเนเธ เนเธฅเธฐเธเธฑเธ”เธเธฒเธฃเธเธญเธฃเนเธ•เธเธญเธเธเธธเธ“เนเธ”เนเนเธเธ—เธตเนเน€เธ”เธตเธขเธง' : 'Welcome to your portfolio. Live market analysis, Smart Support & Resistance, option tools, and portfolio intelligence in one premium workspace.';
+                if (greeting) greeting.innerHTML = userPreferences.language === 'th' ? 'ยินดีต้อนรับสู่ <span>Quantora AI</span>' : 'Welcome to <span>Quantora AI</span>';
+                if (greetingCopy) greetingCopy.textContent = userPreferences.language === 'th' ? 'ดูข้อมูลตลาด วิเคราะห์หุ้น และจัดการพอร์ตของคุณได้ในที่เดียว' : 'Welcome to your portfolio. Live market analysis, Smart Support & Resistance, option tools, and portfolio intelligence in one premium workspace.';
                 return;
             }
             if (name) name.textContent = user.username || user.display_name || 'Welcome to Quantora AI';
@@ -79,8 +79,8 @@
             const greeting = document.getElementById('home-welcome-title');
             const greetingCopy = document.getElementById('home-welcome-copy');
             const nickname = user.username || user.display_name;
-            if (greeting && nickname) greeting.innerHTML = userPreferences.language === 'th' ? `เธชเธงเธฑเธชเธ”เธต ${escapeHtml(nickname)} <span>๐‘</span>` : `Hello ${escapeHtml(nickname)} <span>๐‘</span>`;
-            if (greetingCopy && nickname) greetingCopy.textContent = userPreferences.language === 'th' ? 'เธขเธดเธเธ”เธตเธ•เนเธญเธเธฃเธฑเธเธชเธนเนเธเธญเธฃเนเธ•เธเธญเธเธเธธเธ“ เธเนเธญเธกเธนเธฅเธเธญเธเธเธธเธ“เธเธดเธเธเนเน€เธฃเธตเธขเธเธฃเนเธญเธขเนเธฅเนเธง' : 'Welcome to your Portfolio. Your synced Quantora workspace is ready.';
+            if (greeting && nickname) greeting.innerHTML = userPreferences.language === 'th' ? `สวัสดี ${escapeHtml(nickname)} <span>👋</span>` : `Hello ${escapeHtml(nickname)} <span>👋</span>`;
+            if (greetingCopy && nickname) greetingCopy.textContent = userPreferences.language === 'th' ? 'ยินดีต้อนรับสู่พอร์ตของคุณ ข้อมูลของคุณซิงก์เรียบร้อยแล้ว' : 'Welcome to your Portfolio. Your synced Quantora workspace is ready.';
         }
 
         function setProfileImagePreview(url) {
@@ -97,12 +97,12 @@
             const file = input && input.files && input.files[0];
             if (!file) return;
             if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
-                setAuthStatus('เธฃเธญเธเธฃเธฑเธเน€เธเธเธฒเธฐเนเธเธฅเน JPG, PNG เนเธฅเธฐ WEBP', 'error');
+                setAuthStatus('รองรับเฉพาะไฟล์ JPG, PNG และ WEBP', 'error');
                 input.value = '';
                 return;
             }
             if (file.size > 5 * 1024 * 1024) {
-                setAuthStatus('เธฃเธนเธเธ เธฒเธเธ•เนเธญเธเธกเธตเธเธเธฒเธ”เนเธกเนเน€เธเธดเธ 5 MB', 'error');
+                setAuthStatus('รูปภาพต้องมีขนาดไม่เกิน 5 MB', 'error');
                 input.value = '';
                 return;
             }
@@ -111,7 +111,7 @@
                 const image = await new Promise((resolve, reject) => {
                     const candidate = new Image();
                     candidate.onload = () => resolve(candidate);
-                    candidate.onerror = () => reject(new Error('เนเธกเนเธชเธฒเธกเธฒเธฃเธ–เธญเนเธฒเธเธฃเธนเธเธ เธฒเธเธเธตเนเนเธ”เน'));
+                    candidate.onerror = () => reject(new Error('ไม่สามารถอ่านรูปภาพนี้ได้'));
                     candidate.src = sourceUrl;
                 });
                 const side = Math.min(image.naturalWidth, image.naturalHeight);
@@ -123,9 +123,9 @@
                 canvas.getContext('2d').drawImage(image, sourceX, sourceY, side, side, 0, 0, 160, 160);
                 pendingProfileAvatarUrl = canvas.toDataURL('image/webp', 0.82);
                 setProfileImagePreview(pendingProfileAvatarUrl);
-                setAuthStatus('เธ•เธฑเธงเธญเธขเนเธฒเธเธฃเธนเธเธ เธฒเธเธเธฃเนเธญเธกเธเธฑเธเธ—เธถเธเนเธฅเนเธง', 'success');
+                setAuthStatus('ตัวอย่างรูปภาพพร้อมบันทึกแล้ว', 'success');
             } catch (error) {
-                setAuthStatus(error.message || 'เนเธกเนเธชเธฒเธกเธฒเธฃเธ–เน€เธ•เธฃเธตเธขเธกเธฃเธนเธเธ เธฒเธเนเธ”เน', 'error');
+                setAuthStatus(error.message || 'ไม่สามารถเตรียมรูปภาพได้', 'error');
             } finally {
                 URL.revokeObjectURL(sourceUrl);
             }
@@ -138,7 +138,7 @@
             }
             const username = document.getElementById('profile-display-name')?.value.trim() || '';
             if (username && !/^[A-Za-z0-9_.-]{3,32}$/.test(username)) {
-                setAuthStatus('เธเธทเนเธญเธ—เธตเนเนเธชเธ”เธเธ•เนเธญเธเธกเธต 3โ€“32 เธ•เธฑเธงเธญเธฑเธเธฉเธฃ เนเธฅเธฐเนเธเนเนเธ”เนเน€เธเธเธฒเธฐเธ•เธฑเธงเธญเธฑเธเธฉเธฃ เธ•เธฑเธงเน€เธฅเธ เธเธธเธ” เธเธตเธ”เธฅเนเธฒเธ เธซเธฃเธทเธญเธเธตเธ”เธเธฅเธฒเธ', 'error');
+                setAuthStatus('ชื่อที่แสดงต้องมี 3–32 ตัวอักษร และใช้ได้เฉพาะตัวอักษร ตัวเลข จุด ขีดล่าง หรือขีดกลาง', 'error');
                 return;
             }
             if (!username && !pendingProfileAvatarUrl) {
@@ -152,14 +152,14 @@
                 const response = await authFetch('/api/me', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload) });
                 const data = await response.json().catch(() => ({}));
                 if (!response.ok && response.status >= 500) throw new Error('Cloud sync unavailable');
-                if (!response.ok) throw new Error(data.detail || 'เนเธกเนเธชเธฒเธกเธฒเธฃเธ–เธเธฑเธเธ—เธถเธเนเธเธฃเนเธเธฅเนเนเธ”เน');
+                if (!response.ok) throw new Error(data.detail || 'ไม่สามารถบันทึกโปรไฟล์ได้');
                 authState.user = data.user || authState.user;
                 pendingProfileAvatarUrl = null;
                 setProfileSummary();
                 renderProfileAuthContent();
-                setAuthStatus('เธเธฑเธเธ—เธถเธเนเธเธฃเนเธเธฅเนเนเธฅเนเธง', 'success');
+                setAuthStatus('บันทึกโปรไฟล์แล้ว', 'success');
             } catch (error) {
-                setAuthStatus(error.message || 'เนเธกเนเธชเธฒเธกเธฒเธฃเธ–เธเธฑเธเธ—เธถเธเนเธเธฃเนเธเธฅเนเนเธ”เน', 'error');
+                setAuthStatus(error.message || 'ไม่สามารถบันทึกโปรไฟล์ได้', 'error');
             }
         }
 
@@ -171,7 +171,7 @@
         }
 
         function sessionSettingsMarkup() {
-            return `<details id="settings-details" class="pt-sync-note" style="margin:14px 0 0" open><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">${t('workspace_settings', 'Workspace settings')}</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>${t('theme', 'Theme')}</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>${t('language', 'Language')}</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>เนเธ—เธข</option></select></label><label class="pt-tools-field"><span>${t('currency', 'Currency')}</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>${t('timeframe', 'Default timeframe')}</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">${cloudWorkspaceEnabled() ? t('auto_save', 'Changes save automatically to your cloud workspace.') : t('settings_session_only', 'Changes apply to this session. Sign in to sync them across devices.')}</p></details>`;
+            return `<details id="settings-details" class="pt-sync-note" style="margin:14px 0 0" open><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">${t('workspace_settings', 'Workspace settings')}</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>${t('theme', 'Theme')}</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>${t('language', 'Language')}</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>ไทย</option></select></label><label class="pt-tools-field"><span>${t('currency', 'Currency')}</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>${t('timeframe', 'Default timeframe')}</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">${cloudWorkspaceEnabled() ? t('auto_save', 'Changes save automatically to your cloud workspace.') : t('settings_session_only', 'Changes apply to this session. Sign in to sync them across devices.')}</p></details>`;
         }
 
         function renderProfileAuthContent() {
@@ -180,7 +180,7 @@
             if (!host) return;
 
             if (authState.configured === null) {
-                host.innerHTML = '<div class="pt-sync-note">Checking the secure account serviceโ€ฆ</div>';
+                host.innerHTML = '<div class="pt-sync-note">Checking the secure account service…</div>';
                 return;
             }
             if (authState.configured === false && !authState.googleEnabled) {
@@ -215,17 +215,17 @@
                     <div class="pt-auth-stack">
                         <div class="pt-sync-note" style="margin:0;">${cloudSyncActive ? 'Cloud sync is active for watchlists, positions, and indicator preferences on this account.' : 'Your account is signed in. Cloud sync is temporarily unavailable, so changes stay on this device.'}</div>
                         <section class="pt-sync-note" style="margin:0;">
-                            <strong style="color:#f3f5ff;">เนเธเธฃเนเธเธฅเน</strong>
+                            <strong style="color:#f3f5ff;">โปรไฟล์</strong>
                             <div style="display:flex; gap:12px; align-items:center; margin-top:10px;">
                                 <div id="profile-image-preview" class="pt-sheet-avatar" style="flex:0 0 48px; width:48px; height:48px;">${escapeHtml(profileInitials(user))}</div>
-                                <label class="pt-auth-field" style="margin:0; flex:1;"><span>เธเธทเนเธญเธ—เธตเนเนเธชเธ”เธ</span><input id="profile-display-name" maxlength="32" autocomplete="username" value="${escapeHtml(user.username || '')}"></label>
+                                <label class="pt-auth-field" style="margin:0; flex:1;"><span>ชื่อที่แสดง</span><input id="profile-display-name" maxlength="32" autocomplete="username" value="${escapeHtml(user.username || '')}"></label>
                             </div>
-                            <label class="pt-auth-field" style="margin-top:10px;"><span>เธฃเธนเธเนเธเธฃเนเธเธฅเน (JPG, PNG เธซเธฃเธทเธญ WEBP)</span><input type="file" accept="image/jpeg,image/png,image/webp" onchange="previewProfileImage(this)"></label>
-                            <p style="font-size:11px; color:#aeb7d2; margin:8px 0;">เธฃเธนเธเธเธฐเธ–เธนเธเธเธฃเธญเธเน€เธเนเธเธชเธตเนเน€เธซเธฅเธตเนเธขเธกเนเธฅเธฐเธขเนเธญเธเนเธญเธเธเธฑเธเธ—เธถเธ</p>
-                            <button type="button" class="pt-auth-action" onclick="saveProfileDetails()">เธเธฑเธเธ—เธถเธเนเธเธฃเนเธเธฅเน</button>
+                            <label class="pt-auth-field" style="margin-top:10px;"><span>รูปโปรไฟล์ (JPG, PNG หรือ WEBP)</span><input type="file" accept="image/jpeg,image/png,image/webp" onchange="previewProfileImage(this)"></label>
+                            <p style="font-size:11px; color:#aeb7d2; margin:8px 0;">รูปจะถูกครอปเป็นสี่เหลี่ยมและย่อก่อนบันทึก</p>
+                            <button type="button" class="pt-auth-action" onclick="saveProfileDetails()">บันทึกโปรไฟล์</button>
                         </section>
                         ${cloudSyncActive ? '<section id="cloud-workspace-manager" class="pt-workspace-manager" aria-label="Cloud workspace manager"><div id="cloud-workspace-content"></div></section><section id="alert-center-manager" class="pt-alert-manager" aria-label="Cloud alert rules and in-app notification inbox"><div id="alert-center-content"></div></section>' : ''}
-                        ${cloudSyncActive ? `<details id="settings-details" class="pt-sync-note" style="margin:0"><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">${t('workspace_settings', 'Workspace settings')}</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>${t('theme', 'Theme')}</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>${t('language', 'Language')}</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>เนเธ—เธข</option></select></label><label class="pt-tools-field"><span>${t('currency', 'Currency')}</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>${t('timeframe', 'Default timeframe')}</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">${t('auto_save', 'Changes save automatically to your cloud workspace.')}</p></details>` : ''}
+                        ${cloudSyncActive ? `<details id="settings-details" class="pt-sync-note" style="margin:0"><summary style="cursor:pointer; color:#f4f6ff; font-weight:700;">${t('workspace_settings', 'Workspace settings')}</summary><div class="pt-tools-fields" style="margin-top:12px"><label class="pt-tools-field"><span>${t('theme', 'Theme')}</span><select id="setting-theme" onchange="saveUserSettings()"><option value="dark" ${userPreferences.theme === 'dark' ? 'selected' : ''}>Dark</option><option value="light" ${userPreferences.theme === 'light' ? 'selected' : ''}>Light</option><option value="system" ${userPreferences.theme === 'system' ? 'selected' : ''}>System</option></select></label><label class="pt-tools-field"><span>${t('language', 'Language')}</span><select id="setting-language" onchange="saveUserSettings()"><option value="en" ${userPreferences.language === 'en' ? 'selected' : ''}>English</option><option value="th" ${userPreferences.language === 'th' ? 'selected' : ''}>ไทย</option></select></label><label class="pt-tools-field"><span>${t('currency', 'Currency')}</span><select id="setting-currency" onchange="saveUserSettings()"><option value="USD" ${userPreferences.currency === 'USD' ? 'selected' : ''}>USD</option><option value="THB" ${userPreferences.currency === 'THB' ? 'selected' : ''}>THB</option></select></label><label class="pt-tools-field"><span>${t('timeframe', 'Default timeframe')}</span><select id="setting-timeframe" onchange="saveUserSettings()"><option value="1d" ${userPreferences.default_timeframe === '1d' ? 'selected' : ''}>Daily</option><option value="week" ${userPreferences.default_timeframe === 'week' ? 'selected' : ''}>Weekly</option></select></label></div><p style="margin:10px 0 0; color:#aeb7d2; font-size:10px;">${t('auto_save', 'Changes save automatically to your cloud workspace.')}</p></details>` : ''}
                         <button type="button" class="pt-auth-action secondary" onclick="signOut()">Sign out</button>
                         <div id="profile-auth-status" class="pt-auth-status"></div>
                     </div>`;
@@ -275,7 +275,7 @@
                 submit.textContent = 'Working securely…';
                 return;
             }
-            if (submit) submit.textContent = isBusy ? (label || 'Working securelyโ€ฆ') : (authFormMode === 'sign-up' ? 'Create account' : 'Sign in');
+            if (submit) submit.textContent = isBusy ? (label || 'Working securely…') : (authFormMode === 'sign-up' ? 'Create account' : 'Sign in');
         }
 
         function showVerificationAction(email = '') {

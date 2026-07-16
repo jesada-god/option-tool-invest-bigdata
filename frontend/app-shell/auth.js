@@ -18,9 +18,9 @@
 
 
         function authClientValidation(email, password, confirmation, isSignUp) {
-            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'เธเธฃเธธเธ“เธฒเธเธฃเธญเธเธญเธตเน€เธกเธฅเนเธซเนเธ–เธนเธเธ•เนเธญเธ / Enter a valid email address.';
-            if (!password || password.length < 8) return 'เธฃเธซเธฑเธชเธเนเธฒเธเธ•เนเธญเธเธกเธตเธญเธขเนเธฒเธเธเนเธญเธข 8 เธ•เธฑเธงเธญเธฑเธเธฉเธฃ / Use at least 8 characters.';
-            if (isSignUp && password !== confirmation) return 'เธฃเธซเธฑเธชเธเนเธฒเธเธ—เธฑเนเธเธชเธญเธเธเนเธญเธเนเธกเนเธ•เธฃเธเธเธฑเธ / Password confirmation does not match.';
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return 'กรุณากรอกอีเมลให้ถูกต้อง / Enter a valid email address.';
+            if (!password || password.length < 8) return 'รหัสผ่านต้องมีอย่างน้อย 8 ตัวอักษร / Use at least 8 characters.';
+            if (isSignUp && password !== confirmation) return 'รหัสผ่านทั้งสองช่องไม่ตรงกัน / Password confirmation does not match.';
             return '';
         }
 
@@ -36,12 +36,12 @@
             const normalized = raw.toLowerCase();
             if (/confirm|verify|not confirmed/.test(normalized)) {
                 showVerificationAction(email);
-                return 'เธเธฃเธธเธ“เธฒเธขเธทเธเธขเธฑเธเธญเธตเน€เธกเธฅเธเนเธญเธเน€เธเนเธฒเธชเธนเนเธฃเธฐเธเธ เนเธฅเนเธงเธเธ” Resend confirmation เนเธ”เนเธซเธฒเธเธขเธฑเธเนเธกเนเนเธ”เนเธฃเธฑเธเธญเธตเน€เธกเธฅ';
+                return 'กรุณายืนยันอีเมลก่อนเข้าสู่ระบบ แล้วกด Resend confirmation ได้หากยังไม่ได้รับอีเมล';
             }
-            if (/already registered|already been registered|user already exists/.test(normalized)) return 'เธญเธตเน€เธกเธฅเธเธตเนเธกเธตเธเธฑเธเธเธตเธญเธขเธนเนเนเธฅเนเธง เธฅเธญเธเน€เธเนเธฒเธชเธนเนเธฃเธฐเธเธเธซเธฃเธทเธญเธฃเธตเน€เธเนเธ•เธฃเธซเธฑเธชเธเนเธฒเธ';
-            if (/invalid login|invalid credentials|password/.test(normalized)) return 'เธญเธตเน€เธกเธฅเธซเธฃเธทเธญเธฃเธซเธฑเธชเธเนเธฒเธเนเธกเนเธ–เธนเธเธ•เนเธญเธ';
-            if (/too many|rate limit|429/.test(normalized)) return 'เธฅเธญเธเนเธซเธกเนเธ เธฒเธขเธซเธฅเธฑเธเธชเธฑเธเธเธฃเธนเน เธฃเธฐเธเธเธเธณเธเธฑเธ”เธเธณเธเธงเธเธเธฃเธฑเนเธเน€เธเธทเนเธญเธเธงเธฒเธกเธเธฅเธญเธ”เธ เธฑเธข';
-            if (/network|failed to fetch|temporarily unavailable/.test(normalized)) return 'เน€เธเธทเนเธญเธกเธ•เนเธญเธฃเธฐเธเธเนเธกเนเนเธ”เน เธเธฃเธธเธ“เธฒเธ•เธฃเธงเธเธชเธญเธเธญเธดเธเน€เธ—เธญเธฃเนเน€เธเนเธ•เนเธฅเนเธงเธฅเธญเธเนเธซเธกเน';
+            if (/already registered|already been registered|user already exists/.test(normalized)) return 'อีเมลนี้มีบัญชีอยู่แล้ว ลองเข้าสู่ระบบหรือรีเซ็ตรหัสผ่าน';
+            if (/invalid login|invalid credentials|password/.test(normalized)) return 'อีเมลหรือรหัสผ่านไม่ถูกต้อง';
+            if (/too many|rate limit|429/.test(normalized)) return 'ลองใหม่ภายหลังสักครู่ ระบบจำกัดจำนวนครั้งเพื่อความปลอดภัย';
+            if (/network|failed to fetch|temporarily unavailable/.test(normalized)) return 'เชื่อมต่อระบบไม่ได้ กรุณาตรวจสอบอินเทอร์เน็ตแล้วลองใหม่';
             return raw;
         }
 
@@ -152,7 +152,7 @@
                 return;
             }
             const endpoint = authFormMode === 'sign-up' ? '/api/auth/sign-up' : '/api/auth/sign-in';
-            setAuthStatus('Working securelyโ€ฆ');
+            setAuthStatus('Working securely…');
             setAuthBusy(true);
             try {
                 const res = await authFetch(endpoint, {
@@ -189,8 +189,8 @@
                 setAuthStatus('Enter your email first, then request a reset link.', 'error');
                 return;
             }
-            setAuthStatus('Sending reset emailโ€ฆ');
-            setAuthBusy(true, 'Sendingโ€ฆ');
+            setAuthStatus('Sending reset email…');
+            setAuthBusy(true, 'Sending…');
             try {
                 const res = await authFetch('/api/auth/forgot-password', {
                     method: 'POST', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ email })
@@ -211,8 +211,8 @@
                 setAuthStatus('Enter your email first, then request a confirmation link.', 'error');
                 return;
             }
-            setAuthStatus('Sending confirmation emailโ€ฆ');
-            setAuthBusy(true, 'Sendingโ€ฆ');
+            setAuthStatus('Sending confirmation email…');
+            setAuthBusy(true, 'Sending…');
             try {
                 const res = await authFetch('/api/auth/verify-email', {
                     method: 'POST', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ email })
@@ -230,7 +230,7 @@
         async function completeOnboarding() {
             const username = document.getElementById('onboarding-username')?.value.trim();
             if (!username) { setAuthStatus('Choose a username to continue.', 'error'); return; }
-            setAuthStatus('Saving your profileโ€ฆ');
+            setAuthStatus('Saving your profile…');
             try {
                 const res = await authFetch('/api/me', {
                     method: 'PUT', headers: authHeaders(true), credentials: 'same-origin', body: JSON.stringify({ username })

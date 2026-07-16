@@ -15,7 +15,7 @@
         }
 
         function stockWorkspaceMetric(label, value) {
-            return `<div class="pt-company-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || 'โ€”')}</strong></div>`;
+            return `<div class="pt-company-metric"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value || '—')}</strong></div>`;
         }
 
         async function openStockWorkspaceTab(tab) {
@@ -35,7 +35,7 @@
             const requestVersion = ++stockWorkspaceRequestVersion;
             const controller = new AbortController();
             stockWorkspaceAbortController = controller;
-            workspace.innerHTML = `<h3>${escapeHtml(ticker)}</h3><p class="pt-empty-copy">${escapeHtml(analysisText('loading', 'Loading provider-backed analysisโ€ฆ'))}</p>`;
+            workspace.innerHTML = `<h3>${escapeHtml(ticker)}</h3><p class="pt-empty-copy">${escapeHtml(analysisText('loading', 'Loading provider-backed analysis…'))}</p>`;
             workspace.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
             try {
                 if (tab === 'company') {
@@ -43,8 +43,8 @@
                     if (!response.ok) throw new Error('Company information is unavailable.');
                     const data = await response.json();
                     if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
-                    const website = data.website && /^https?:\/\//.test(data.website) ? new URL(data.website).hostname : 'โ€”';
-                    const metrics = [[analysisText('sector', 'Sector'), data.sector], [analysisText('industry', 'Industry'), data.industry], [analysisText('exchange', 'Exchange'), data.exchange], [analysisText('employees', 'Employees'), Number.isFinite(Number(data.employees)) ? Number(data.employees).toLocaleString() : 'โ€”'], [analysisText('market_cap', 'Market cap'), Number.isFinite(Number(data.market_cap)) ? `$${(Number(data.market_cap) / 1e9).toFixed(1)}B` : 'โ€”'], [analysisText('website', 'Website'), website]];
+                    const website = data.website && /^https?:\/\//.test(data.website) ? new URL(data.website).hostname : '—';
+                    const metrics = [[analysisText('sector', 'Sector'), data.sector], [analysisText('industry', 'Industry'), data.industry], [analysisText('exchange', 'Exchange'), data.exchange], [analysisText('employees', 'Employees'), Number.isFinite(Number(data.employees)) ? Number(data.employees).toLocaleString() : '—'], [analysisText('market_cap', 'Market cap'), Number.isFinite(Number(data.market_cap)) ? `$${(Number(data.market_cap) / 1e9).toFixed(1)}B` : '—'], [analysisText('website', 'Website'), website]];
                     const sourceSummary = userPreferences.language === 'th' && data.summary ? `<details class="pt-empty-copy" style="margin-top:12px;"><summary>${escapeHtml(analysisText('company_source', 'Full provider description (original language)'))}</summary><p>${escapeHtml(data.summary)}</p></details>` : '';
                     workspace.innerHTML = `<h3>${escapeHtml(data.name || ticker)}</h3><p>${escapeHtml(localizedCompanySummary(data))}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value))).join('')}</div>${sourceSummary}`;
                     return;
@@ -54,9 +54,9 @@
                     if (!companyResponse.ok || !statsResponse.ok) throw new Error('Financial data is unavailable.');
                     const [company, stats] = await Promise.all([companyResponse.json(), statsResponse.json()]);
                     if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
-                    const metrics = [[analysisText('trailing_pe', 'Trailing P/E'), company.trailing_pe], [analysisText('forward_pe', 'Forward P/E'), company.forward_pe], [analysisText('revenue', 'Revenue'), Number.isFinite(Number(company.revenue)) ? `$${(Number(company.revenue) / 1e9).toFixed(2)}B` : 'โ€”'], [analysisText('profit_margin', 'Profit margin'), Number.isFinite(Number(company.profit_margin)) ? `${(Number(company.profit_margin) * 100).toFixed(2)}%` : 'โ€”'], [analysisText('dividend_yield', 'Dividend yield'), Number.isFinite(Number(company.dividend_yield)) ? `${(Number(company.dividend_yield) * 100).toFixed(2)}%` : 'โ€”'], [analysisText('fair_value', 'Fair value'), stats.fair_value ? `$${Number(stats.fair_value).toFixed(2)}` : 'โ€”']];
-                    const heading = userPreferences.language === 'th' ? `เธ เธฒเธเธฃเธงเธกเธเนเธญเธกเธนเธฅเธเธฒเธฃเน€เธเธดเธ ${ticker}` : `${ticker} financial snapshot`;
-                    workspace.innerHTML = `<h3>${escapeHtml(heading)}</h3><p>${escapeHtml(analysisText('financial_note', 'Provider-reported fields may be unavailable for some instruments. Values are not accounting advice.'))}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? 'โ€”'))).join('')}</div>`;
+                    const metrics = [[analysisText('trailing_pe', 'Trailing P/E'), company.trailing_pe], [analysisText('forward_pe', 'Forward P/E'), company.forward_pe], [analysisText('revenue', 'Revenue'), Number.isFinite(Number(company.revenue)) ? `$${(Number(company.revenue) / 1e9).toFixed(2)}B` : '—'], [analysisText('profit_margin', 'Profit margin'), Number.isFinite(Number(company.profit_margin)) ? `${(Number(company.profit_margin) * 100).toFixed(2)}%` : '—'], [analysisText('dividend_yield', 'Dividend yield'), Number.isFinite(Number(company.dividend_yield)) ? `${(Number(company.dividend_yield) * 100).toFixed(2)}%` : '—'], [analysisText('fair_value', 'Fair value'), stats.fair_value ? `$${Number(stats.fair_value).toFixed(2)}` : '—']];
+                    const heading = userPreferences.language === 'th' ? `ภาพรวมข้อมูลการเงิน ${ticker}` : `${ticker} financial snapshot`;
+                    workspace.innerHTML = `<h3>${escapeHtml(heading)}</h3><p>${escapeHtml(analysisText('financial_note', 'Provider-reported fields may be unavailable for some instruments. Values are not accounting advice.'))}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? '—'))).join('')}</div>`;
                     return;
                 }
                 if (tab === 'news') {
@@ -65,7 +65,7 @@
                     const data = await response.json();
                     if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
                     const items = Array.isArray(data.items) ? data.items : [];
-                    const heading = userPreferences.language === 'th' ? `เธเนเธฒเธงเธฅเนเธฒเธชเธธเธ”เธเธญเธ ${ticker}` : `${ticker} news`;
+                    const heading = userPreferences.language === 'th' ? `ข่าวล่าสุดของ ${ticker}` : `${ticker} news`;
                     const noNews = analysisText('no_news', 'No current headlines are available.');
                     workspace.innerHTML = `<h3>${escapeHtml(heading)}</h3><p>${escapeHtml(analysisText('news_note', 'Showing up to five recent, ticker-relevant headlines from the last three months.'))}</p><div class="pt-news-list">${items.length ? items.map(item => { const meta = [item.publisher || 'Market data provider', formatAnalysisDate(item.published_at)].filter(Boolean).join(' ยท '); const link = safeExternalUrl(item.link); return `<a class="pt-news-item" href="${escapeHtml(link)}" ${link !== '#' ? 'target="_blank" rel="noopener noreferrer"' : ''}>${escapeHtml(item.title)}<span>${escapeHtml(meta)}</span></a>`; }).join('') : `<p class="pt-empty-copy">${escapeHtml(noNews)}</p>`}</div><p class="pt-empty-copy" style="margin-top:10px;">${escapeHtml(analysisText('news_original_language', 'Headlines are displayed in the source language.'))}</p>`;
                     return;
@@ -76,9 +76,9 @@
                     const [ai, levels] = await Promise.all([aiResponse.json(), levelsResponse.json()]);
                     if (requestVersion !== stockWorkspaceRequestVersion || ticker !== currentTicker) return;
                     const closest = levels.closest_alert || {};
-                    const metrics = [[analysisText('signal', 'Signal'), ai.signal], [analysisText('confidence', 'Confidence'), `${Number(ai.confidence_score || 0).toFixed(1)}/100`], [analysisText('bullish', 'Bullish'), `${Number(ai.bullish_probability || 0).toFixed(1)}%`], [analysisText('bearish', 'Bearish'), `${Number(ai.bearish_probability || 0).toFixed(1)}%`], [analysisText('closest_weekly_sr', 'Closest weekly S/R'), closest.label ? `${closest.label} ยท $${Number(closest.level).toFixed(2)}` : 'โ€”'], [analysisText('distance', 'Distance'), Number.isFinite(Number(closest.distance_pct)) ? `${Number(closest.distance_pct).toFixed(2)}%` : 'โ€”']];
-                    const heading = userPreferences.language === 'th' ? `เนเธเธงเนเธเนเธกเน€เธเธดเธเธงเธดเน€เธเธฃเธฒเธฐเธซเน ${ticker}` : `${ticker} analytical forecast`;
-                    workspace.innerHTML = `<h3>${escapeHtml(heading)}</h3><p>${escapeHtml(userPreferences.language === 'th' ? analysisText('forecast_note') : (ai.disclaimer || 'Analytical signal only.'))}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? 'โ€”'))).join('')}</div>`;
+                    const metrics = [[analysisText('signal', 'Signal'), ai.signal], [analysisText('confidence', 'Confidence'), `${Number(ai.confidence_score || 0).toFixed(1)}/100`], [analysisText('bullish', 'Bullish'), `${Number(ai.bullish_probability || 0).toFixed(1)}%`], [analysisText('bearish', 'Bearish'), `${Number(ai.bearish_probability || 0).toFixed(1)}%`], [analysisText('closest_weekly_sr', 'Closest weekly S/R'), closest.label ? `${closest.label} ยท $${Number(closest.level).toFixed(2)}` : '—'], [analysisText('distance', 'Distance'), Number.isFinite(Number(closest.distance_pct)) ? `${Number(closest.distance_pct).toFixed(2)}%` : '—']];
+                    const heading = userPreferences.language === 'th' ? `แนวโน้มเชิงวิเคราะห์ ${ticker}` : `${ticker} analytical forecast`;
+                    workspace.innerHTML = `<h3>${escapeHtml(heading)}</h3><p>${escapeHtml(userPreferences.language === 'th' ? analysisText('forecast_note') : (ai.disclaimer || 'Analytical signal only.'))}</p><div class="pt-company-grid">${metrics.map(([label, value]) => stockWorkspaceMetric(label, String(value ?? '—'))).join('')}</div>`;
                 }
             } catch (error) {
                 if (isAbortError(error)) return;
@@ -88,7 +88,7 @@
             }
         }
 
-        // --- โจ V2 application shell: navigation only, existing engines stay in place ---
+        // --- ✨ V2 application shell: navigation only, existing engines stay in place ---
 
 
         let cloudWorkspaceLoadPromise = null;
@@ -285,7 +285,7 @@
                     const ticker = String(item && item.ticker || '').toUpperCase();
                     if (!/^[A-Z0-9.-]{1,12}$/.test(ticker)) return;
                     const pill = cloudWorkspaceElement('span', 'pt-workspace-ticker', ticker);
-                    const remove = cloudWorkspaceButton('ร—', () => removeTickerFromSelectedCloudWatchlist(ticker));
+                    const remove = cloudWorkspaceButton('×', () => removeTickerFromSelectedCloudWatchlist(ticker));
                     remove.className = '';
                     remove.setAttribute('aria-label', `Remove ${ticker}`);
                     pill.appendChild(remove);
@@ -356,7 +356,7 @@
             host.appendChild(head);
 
             if (cloudWorkspace.loading && !cloudWorkspace.loaded) {
-                host.appendChild(cloudWorkspaceElement('p', 'pt-workspace-status', 'Loading your workspaceโ€ฆ'));
+                host.appendChild(cloudWorkspaceElement('p', 'pt-workspace-status', 'Loading your workspace…'));
                 return;
             }
             if (cloudWorkspace.error && !cloudWorkspace.loaded) {
@@ -436,7 +436,7 @@
                 setCloudWorkspaceStatus('Sign in with cloud sync enabled to manage this workspace.', 'error');
                 return null;
             }
-            setCloudWorkspaceStatus('Saving workspace changeโ€ฆ');
+            setCloudWorkspaceStatus('Saving workspace change…');
             try {
                 const response = await authFetch(url, init);
                 const data = await cloudWorkspaceResponse(response, 'Workspace change was not accepted.');
@@ -513,7 +513,7 @@
         async function deleteCloudWatchlist() {
             const selected = selectedCloudWatchlist();
             if (!selected) { setCloudWorkspaceStatus('Select a watchlist first.', 'error'); return; }
-            if (!window.confirm(`Delete watchlist โ€${selected.name}โ€? This cannot be undone.`)) return;
+            if (!window.confirm(`Delete watchlist “${selected.name}”? This cannot be undone.`)) return;
             await mutateCloudWorkspace(`/api/watchlists/${selected.id}`, {
                 method: 'DELETE', headers: authHeaders(),
             }, 'Watchlist deleted.');
@@ -568,7 +568,7 @@
         async function archiveCloudPortfolio() {
             const selected = selectedCloudPortfolio();
             if (!selected) { setCloudWorkspaceStatus('Select a portfolio first.', 'error'); return; }
-            if (!window.confirm(`Archive portfolio โ€${selected.name}โ€? Existing history is retained.`)) return;
+            if (!window.confirm(`Archive portfolio “${selected.name}”? Existing history is retained.`)) return;
             await mutateCloudWorkspace(`/api/portfolios/${selected.id}`, {
                 method: 'DELETE', headers: authHeaders(),
             }, 'Portfolio archived.');

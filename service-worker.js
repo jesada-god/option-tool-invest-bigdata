@@ -2,7 +2,7 @@
    are intentionally never stored by this worker. */
 // Bump this whenever the application shell changes so an older offline page
 // cannot mask a newly deployed UI after the worker activates.
-const CACHE_NAME = 'quantora-shell-v11';
+const CACHE_NAME = 'quantora-shell-v12';
 const SHELL = [
   '/', '/app.webmanifest', '/assets/app-shell.js',
   '/assets/vendor/lightweight-charts.standalone.production.js',

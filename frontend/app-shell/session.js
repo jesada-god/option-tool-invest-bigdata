@@ -5,7 +5,7 @@
             const button = document.getElementById('favorite-current-button');
             if (!button) return;
             const favorite = favoriteTickers.has(currentTicker);
-            button.textContent = favorite ? `โ… ${t('favorited', 'Favorited')}` : `โ ${t('favorite', 'Favorite')}`;
+            button.textContent = favorite ? `★ ${t('favorited', 'Favorited')}` : `☆ ${t('favorite', 'Favorite')}`;
             button.setAttribute('aria-pressed', String(favorite));
         }
 
