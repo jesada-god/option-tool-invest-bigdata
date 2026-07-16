@@ -26,7 +26,8 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(response.headers["cross-origin-resource-policy"], "same-origin")
         self.assertIn("max-age=31536000", response.headers["strict-transport-security"])
         csp = response.headers["content-security-policy"]
-        self.assertIn("script-src 'self' https://unpkg.com", csp)
+        self.assertIn("script-src 'self'", csp)
+        self.assertNotIn("https://unpkg.com", csp)
         self.assertIn("script-src-attr 'unsafe-inline'", csp)
         self.assertIn("worker-src 'self'", csp)
 
@@ -46,6 +47,10 @@ class ApiSmokeTests(unittest.TestCase):
                 response = self.client.get(f"/assets/routes/{route_name}.js")
                 self.assertEqual(response.status_code, 200)
                 self.assertIn("javascript", response.headers["content-type"])
+
+        chart_library = self.client.get("/assets/vendor/lightweight-charts.standalone.production.js")
+        self.assertEqual(chart_library.status_code, 200)
+        self.assertIn("javascript", chart_library.headers["content-type"])
 
     def test_cross_origin_request_does_not_receive_cors_permission(self) -> None:
         response = self.client.get("/healthz", headers={"Origin": "https://attacker.example"})
@@ -70,4 +75,3 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(second.status_code, 422)
         self.assertEqual(limited.status_code, 429)
         self.assertIn("retry-after", limited.headers)
-

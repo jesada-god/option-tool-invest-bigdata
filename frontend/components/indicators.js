@@ -1,4 +1,5 @@
         function syncPriceScaleWidths() {
+            if (!chartIndicatorsInitialized) return;
             const mainWidth = chart.priceScale('right').width();
             const volWidth = volumeChart.priceScale('right').width();
             const target = Math.max(mainWidth, volWidth, 56);
@@ -44,6 +45,7 @@
         // instead of recalculating every point in the chart on each quote.
         const emaLiveBaseValue = { 20: null, 50: null, 100: null, 200: null };
         let syncedPriceScaleWidth = 0;
+        let chartIndicatorsInitialized = false;
 
         // คำนวณ EMA จากแท่งเทียน (seed ด้วยค่าเฉลี่ย SMA ของ N แท่งแรกเหมือน TradingView)
         function calculateEMA(candles, period) {
@@ -63,6 +65,10 @@
 
         // สร้าง/อัปเดต/ลบ เส้น EMA บนกราฟหลักตามค่า emaSettings ปัจจุบัน + อัปเดต legend ราคาล่าสุด
         function updateEMASeries() {
+            // Preferences may load before the lazy home route creates its
+            // chart instances. The route initializer applies their settings
+            // once those instances exist.
+            if (!chartIndicatorsInitialized) return;
             EMA_PERIODS.forEach(period => {
                 const cfg = emaSettings[period];
                 if (cfg.enabled) {
@@ -101,6 +107,7 @@
         }
 
         function updateLiveEMASeries(lastCandle) {
+            if (!chartIndicatorsInitialized) return;
             if (!lastCandle || !Number.isFinite(lastCandle.close)) return;
             const enabledPeriods = EMA_PERIODS.filter(period => emaSettings[period].enabled && emaSeriesMap[period]);
             if (!enabledPeriods.length) return;
@@ -202,42 +209,49 @@
         // --- 🔄 ระบบซิงค์กราฟหลักและกราฟ Volume ด้วย LogicalRange ---
         let isSyncing = false;
 
-        chart.timeScale().subscribeVisibleLogicalRangeChange(logicalRange => {
-            if (!isSyncing && !isChangingData && logicalRange !== null) {
-                isSyncing = true;
-                volumeChart.timeScale().setVisibleLogicalRange(logicalRange);
-                isSyncing = false;
-            }
-        });
+        function initializeChartIndicators() {
+            if (chartIndicatorsInitialized) return;
+            chartIndicatorsInitialized = true;
 
-        volumeChart.timeScale().subscribeVisibleLogicalRangeChange(logicalRange => {
-            if (!isSyncing && !isChangingData && logicalRange !== null) {
-                isSyncing = true;
-                chart.timeScale().setVisibleLogicalRange(logicalRange);
-                isSyncing = false;
-            }
-        });
+            chart.timeScale().subscribeVisibleLogicalRangeChange(logicalRange => {
+                if (!isSyncing && !isChangingData && logicalRange !== null) {
+                    isSyncing = true;
+                    volumeChart.timeScale().setVisibleLogicalRange(logicalRange);
+                    isSyncing = false;
+                }
+            });
 
-        let chartResizeFrame = null;
-        let lastChartSize = '';
-        const resizeCharts = () => {
-            chartResizeFrame = null;
-            const chartWidth = chartContainer.clientWidth;
-            const chartHeight = chartContainer.clientHeight;
-            const volumeWidth = volumeContainer.clientWidth;
-            const volumeHeight = volumeContainer.clientHeight;
-            const size = `${chartWidth}x${chartHeight}:${volumeWidth}x${volumeHeight}`;
-            if (size === lastChartSize || !chartWidth || !chartHeight || !volumeWidth || !volumeHeight) return;
-            lastChartSize = size;
-            chart.applyOptions({ width: chartWidth, height: chartHeight });
-            volumeChart.applyOptions({ width: volumeWidth, height: volumeHeight });
-            window.requestAnimationFrame(syncPriceScaleWidths);
-        };
-        const chartResizeObserver = new ResizeObserver(() => {
-            if (chartResizeFrame === null) chartResizeFrame = window.requestAnimationFrame(resizeCharts);
-        });
-        chartResizeObserver.observe(chartContainer);
-        chartResizeObserver.observe(volumeContainer);
+            volumeChart.timeScale().subscribeVisibleLogicalRangeChange(logicalRange => {
+                if (!isSyncing && !isChangingData && logicalRange !== null) {
+                    isSyncing = true;
+                    chart.timeScale().setVisibleLogicalRange(logicalRange);
+                    isSyncing = false;
+                }
+            });
+
+            let chartResizeFrame = null;
+            let lastChartSize = '';
+            const resizeCharts = () => {
+                chartResizeFrame = null;
+                const chartWidth = chartContainer.clientWidth;
+                const chartHeight = chartContainer.clientHeight;
+                const volumeWidth = volumeContainer.clientWidth;
+                const volumeHeight = volumeContainer.clientHeight;
+                const size = `${chartWidth}x${chartHeight}:${volumeWidth}x${volumeHeight}`;
+                if (size === lastChartSize || !chartWidth || !chartHeight || !volumeWidth || !volumeHeight) return;
+                lastChartSize = size;
+                chart.applyOptions({ width: chartWidth, height: chartHeight });
+                volumeChart.applyOptions({ width: volumeWidth, height: volumeHeight });
+                window.requestAnimationFrame(syncPriceScaleWidths);
+            };
+            const chartResizeObserver = new ResizeObserver(() => {
+                if (chartResizeFrame === null) chartResizeFrame = window.requestAnimationFrame(resizeCharts);
+            });
+            chartResizeObserver.observe(chartContainer);
+            chartResizeObserver.observe(volumeContainer);
+            resizeCharts();
+            updateEMASeries();
+        }
 
         function resetChartView() {
             if (globalChartData && globalChartData.length > 0) {

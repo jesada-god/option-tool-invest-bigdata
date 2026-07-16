@@ -20,6 +20,9 @@
         let terminalWorkspaceBooted = false;
         let terminalWorkspaceSaveTimer = null;
         let terminalOfflineFlushPromise = null;
+        // Workspace persistence is available before lazy analysis assets load,
+        // so this state belongs to the eagerly loaded shell.
+        let expectedMoveDashboardVisible = false;
 
         function terminalSessionScope() {
             if (authState?.authenticated && authState?.user) return String(authState.user.id || authState.user.email || 'authenticated');

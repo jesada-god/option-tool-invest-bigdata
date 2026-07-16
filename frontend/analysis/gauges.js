@@ -81,8 +81,6 @@
             }
         }
 
-        let expectedMoveDashboardVisible = false;
-
         function toggleExpectedMoveDashboard() {
             expectedMoveDashboardVisible = !expectedMoveDashboardVisible;
             const el = document.getElementById('dashboard-overlay');

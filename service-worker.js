@@ -2,9 +2,10 @@
    are intentionally never stored by this worker. */
 // Bump this whenever the application shell changes so an older offline page
 // cannot mask a newly deployed UI after the worker activates.
-const CACHE_NAME = 'quantora-shell-v5';
+const CACHE_NAME = 'quantora-shell-v7';
 const SHELL = [
   '/', '/app.webmanifest', '/assets/app-shell.js',
+  '/assets/vendor/lightweight-charts.standalone.production.js',
   '/assets/utils/load-classic.js',
   '/assets/components/indicators.js',
   '/assets/api/resilience.js', '/assets/api/cache.js', '/assets/api/auth.js',
@@ -24,16 +25,10 @@ const SHELL = [
   '/assets/portfolio/terminal.js',
   '/assets/services/live-price.js',
 ];
-const REMOTE_SHELL_ASSETS = [
-  'https://unpkg.com/lightweight-charts@4.1.1/dist/lightweight-charts.standalone.production.js',
-];
 
 self.addEventListener('install', event => {
   event.waitUntil(caches.open(CACHE_NAME).then(async cache => {
     await cache.addAll(SHELL);
-    // This non-essential chart dependency is cached opportunistically: its
-    // CDN being unavailable must never prevent the shell from activating.
-    await Promise.all(REMOTE_SHELL_ASSETS.map(asset => cache.add(asset).catch(() => undefined)));
   }));
   self.skipWaiting();
 });
@@ -50,11 +45,13 @@ self.addEventListener('fetch', event => {
   if (event.request.method !== 'GET') return;
   if (url.pathname.startsWith('/api/')) return;
   event.respondWith((async () => {
-    const isShellAsset = (url.origin === self.location.origin && (url.pathname === '/' || url.pathname === '/app.webmanifest' || url.pathname.startsWith('/assets/')))
-      || REMOTE_SHELL_ASSETS.includes(url.href);
+    const isShellAsset = url.origin === self.location.origin
+      && (url.pathname === '/' || url.pathname === '/app.webmanifest' || url.pathname.startsWith('/assets/'));
+    const bypassCache = event.request.cache === 'reload';
     // The shell is revisioned with CACHE_NAME, so cache-first avoids a
-    // network round-trip for each route module without serving stale deploys.
-    if (isShellAsset) {
+    // network round-trip for each route module. A hard refresh must still
+    // revalidate the shell so it can receive a newly activated worker's files.
+    if (isShellAsset && !bypassCache) {
       const cached = await caches.match(event.request);
       if (cached) return cached;
     }

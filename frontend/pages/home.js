@@ -883,6 +883,7 @@
             priceFormat: { type: 'volume' },
             priceScaleId: 'right',
         });
+        initializeChartIndicators();
 
         // --- 🛠️ [แก้บั๊ก] แท่งเทียนกับแท่งวอลุ่มยืนไม่ตรงกัน ---
         // สาเหตุจริง: chart กับ volumeChart เป็นคนละ chart instance กัน แม้ time ของทุกแท่งจะตรงกัน 100%
