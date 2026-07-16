@@ -1,3 +1,4 @@
+import os
 import uuid
 import unittest
 from unittest.mock import patch
@@ -109,7 +110,7 @@ class AuthRouteTests(unittest.TestCase):
                 "server": ("terminal.example", 443),
             }
         )
-        with patch(
+        with patch.dict(os.environ, {"SUPABASE_GOOGLE_ENABLED": "true"}, clear=False), patch(
             "main.get_runtime_auth_settings",
             side_effect=HTTPException(status_code=503, detail="auth provider unavailable"),
         ):
@@ -117,7 +118,9 @@ class AuthRouteTests(unittest.TestCase):
 
         self.assertFalse(result["auth_enabled"])
         self.assertFalse(result["authenticated"])
+        self.assertTrue(result["google_enabled"])
         self.assertFalse(result["cloud_sync_enabled"])
+        self.assertIsNone(result["csrf_token"])
         self.assertEqual(result["configuration_error"], "auth provider unavailable")
 
     def test_me_reports_invalid_optional_persistence_as_cloud_sync_disabled(self):
@@ -147,3 +150,26 @@ class AuthRouteTests(unittest.TestCase):
         self.assertFalse(result["authenticated"])
         self.assertFalse(result["cloud_sync_enabled"])
         self.assertEqual(result["configuration_error"], "DATABASE_URL is invalid")
+
+    def test_me_degrades_a_failed_session_lookup_instead_of_returning_5xx(self):
+        request = Request(
+            {
+                "type": "http", "method": "GET", "scheme": "https", "path": "/api/auth/me",
+                "query_string": b"", "headers": [(b"host", b"terminal.example")],
+                "client": ("127.0.0.1", 12345), "server": ("terminal.example", 443),
+            }
+        )
+        with patch("main.get_runtime_auth_settings", return_value=self.settings), patch(
+            "main.auth_runtime_is_available", return_value=True
+        ), patch("main.google_callback_is_available", return_value=True), patch(
+            "main.persistence_is_configured", return_value=True
+        ), patch(
+            "main.get_optional_current_user", side_effect=HTTPException(status_code=502, detail="provider unavailable")
+        ):
+            result = main.get_me(request, Response())
+
+        self.assertTrue(result["auth_enabled"])
+        self.assertFalse(result["authenticated"])
+        self.assertTrue(result["google_enabled"])
+        self.assertFalse(result["cloud_sync_enabled"])
+        self.assertIsNone(result["csrf_token"])

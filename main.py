@@ -762,7 +762,22 @@ def get_cloud_user_or_legacy(request: Request, response: Response, *, mutate: bo
             status_code=503,
             detail="Cloud sync requires DATABASE_URL in addition to Supabase Auth configuration.",
         )
-    user = get_optional_current_user(request, response)
+    try:
+        user = get_optional_current_user(request, response)
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+        # A provider outage while resolving an old session is an
+        # unauthenticated/degraded browser state, not a reason to stop the
+        # market dashboard with an auth bootstrap 5xx.
+        return {
+            "auth_enabled": True,
+            "authenticated": False,
+            "google_enabled": google_enabled,
+            "cloud_sync_enabled": False,
+            "csrf_token": None,
+            "configuration_error": str(exc.detail),
+        }
     if user is None:
         raise HTTPException(status_code=401, detail="Sign in is required for cloud-synced data.")
     if mutate:
@@ -1629,13 +1644,27 @@ def auth_runtime_is_available(request: Request, settings) -> bool:
     return True
 
 
+def google_oauth_is_configured() -> bool:
+    """Read the explicit Google feature flag without requiring all auth settings.
+
+    ``/api/auth/me`` is the browser's availability probe.  A separate auth
+    configuration problem must not make it claim that an explicitly enabled
+    Google provider has been disabled, because that would remove the only
+    visible OAuth entry point during a recoverable deployment problem.
+    """
+    return os.getenv("SUPABASE_GOOGLE_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 @app.get("/api/auth/config")
 def auth_config(request: Request):
     settings = get_runtime_auth_settings()
     auth_enabled = auth_runtime_is_available(request, settings)
     return {
         "auth_enabled": auth_enabled,
-        "google_enabled": bool(auth_enabled and google_callback_is_available(request, settings)),
+        # This is the provider feature flag, not a transient callback health
+        # probe.  The UI must not remove Google sign-in because a dependent
+        # auth/cloud request is degraded.
+        "google_enabled": bool(settings.google_enabled),
         "cloud_sync_enabled": bool(auth_enabled and persistence_is_configured()),
     }
 
@@ -1654,8 +1683,9 @@ def get_me(request: Request, response: Response):
         return {
             "auth_enabled": False,
             "authenticated": False,
-            "google_enabled": False,
+            "google_enabled": google_oauth_is_configured(),
             "cloud_sync_enabled": False,
+            "csrf_token": None,
             "configuration_error": str(exc.detail),
         }
     if not settings.enabled:
@@ -1664,16 +1694,21 @@ def get_me(request: Request, response: Response):
             "authenticated": False,
             "google_enabled": False,
             "cloud_sync_enabled": False,
+            "csrf_token": None,
         }
     if not auth_runtime_is_available(request, settings):
         return {
             "auth_enabled": False,
             "authenticated": False,
-            "google_enabled": False,
+            "google_enabled": bool(settings.google_enabled),
             "cloud_sync_enabled": False,
+            "csrf_token": None,
             "configuration_error": "Set PUBLIC_APP_URL before enabling cloud authentication in production.",
         }
-    google_enabled = google_callback_is_available(request, settings)
+    # Preserve the explicit provider setting in the session response.  OAuth
+    # callback readiness is checked when a sign-in is started, but a failed
+    # availability probe must not make the browser hide the provider button.
+    google_enabled = bool(settings.google_enabled)
     try:
         cloud_sync_enabled = persistence_is_configured()
         persistence_configuration_error = None
@@ -1716,13 +1751,35 @@ def get_me(request: Request, response: Response):
         if persistence_configuration_error:
             result["configuration_error"] = persistence_configuration_error
         return result
+    try:
+        profile = ensure_cloud_profile(user)
+    except Exception as exc:
+        # Cloud profile provisioning is optional enrichment at bootstrap.
+        # Keep the signed-in session available even if persistence is briefly
+        # unavailable, and let the client operate in local mode.
+        logger.warning("Cloud profile unavailable during auth bootstrap: %s", exc)
+        return {
+            "auth_enabled": True,
+            "authenticated": True,
+            "google_enabled": google_enabled,
+            "cloud_sync_enabled": False,
+            "csrf_token": csrf_token,
+            "user": {
+                "id": str(user.id),
+                "email": user.email,
+                "username": user.preferred_username,
+                "avatar_url": user.avatar_url,
+                "needs_onboarding": False,
+            },
+            "configuration_error": "Cloud profile is temporarily unavailable.",
+        }
     return {
         "auth_enabled": True,
         "authenticated": True,
         "google_enabled": google_enabled,
         "cloud_sync_enabled": True,
         "csrf_token": csrf_token,
-        "user": ensure_cloud_profile(user),
+        "user": profile,
     }
 
 

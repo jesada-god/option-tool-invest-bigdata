@@ -2662,6 +2662,10 @@
         let srLines = [];
         let srData = null;
         let activePositions = [];
+        // Device-local positions are intentionally session-only. They keep
+        // the portfolio usable without cloud storage and are never sent to a
+        // cloud route until a signed-in cloud session exists.
+        let localPositions = [];
         let isChangingData = false;
         let currentLivePrice = null;
         let currentPrevClose = 0;
@@ -4466,7 +4470,7 @@
                 host.innerHTML = '<div class="pt-sync-note">Checking the secure account service…</div>';
                 return;
             }
-            if (authState.configured === false) {
+            if (authState.configured === false && !authState.googleEnabled) {
                 host.innerHTML = `<div class="pt-sync-note"><strong style="color:#f3f5ff;">Sign-in is not enabled on this deployment yet.</strong><br>Set <code>SUPABASE_URL</code> and <code>SUPABASE_ANON_KEY</code> in Render, then redeploy. The Login / Create account form will appear automatically after the secure auth service is available.</div>${sessionSettingsMarkup()}<div id="profile-auth-status" class="pt-auth-status"></div>`;
                 return;
             }
@@ -4611,7 +4615,12 @@
                         configured: Boolean(data.auth_enabled ?? data.configured),
                         authenticated: Boolean(data.authenticated),
                         user: data.user || data.profile || null,
-                        googleEnabled: Boolean(data.google_enabled),
+                        // A missing field is not a provider-disable signal.
+                        // Keep the last known value so a partial/degraded
+                        // auth response cannot remove the Google entry point.
+                        googleEnabled: typeof data.google_enabled === 'boolean'
+                            ? data.google_enabled
+                            : authState.googleEnabled,
                         cloudSyncEnabled: Boolean(data.cloud_sync_enabled),
                         csrfToken: data.csrf_token || null,
                     };
@@ -5561,6 +5570,10 @@
                 setWatchlistItems(localWatchlistItems());
                 return;
             }
+            if (authState.configured === false) {
+                setWatchlistItems(localWatchlistItems());
+                return;
+            }
             if (cloudWorkspaceEnabled()) {
                 const loaded = cloudWorkspace.loaded || await loadCloudWorkspace();
                 if (sessionEpoch !== authSessionEpoch) return;
@@ -6164,7 +6177,7 @@
                 setWatchlistStatus('Watchlist is unavailable. Please retry after refreshing your workspace.', 'error');
                 return;
             }
-            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
+            if (!authState.authenticated || (authState.configured === true && !authState.cloudSyncEnabled)) {
                 const items = localWatchlistItems();
                 if (!items.includes(currentTicker)) items.push(currentTicker);
                 saveLocalWatchlistItems(items);
@@ -6203,7 +6216,7 @@
                     if (result && wasCurrent) switchStock(watchlist[0] || 'NVDA');
                     return;
                 }
-                if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
+                if (!authState.authenticated || (authState.configured === true && !authState.cloudSyncEnabled)) {
                     const items = localWatchlistItems().filter(item => String(item).toUpperCase() !== String(ticker).toUpperCase());
                     saveLocalWatchlistItems(items);
                     setWatchlistItems(items);
@@ -6278,14 +6291,15 @@
                 updateHomePortfolioSurface();
                 return;
             }
-            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
-                // The backend deliberately does not expose the shared demo
-                // portfolio once account auth is enabled without persistence.
-                // Do not issue a request that must fail with 503.
-                activePositions = [];
+            if (!cloudWorkspaceEnabled()) {
+                // Use session-local state whenever cloud storage is disabled
+                // or auth is unavailable; never call /api/positions then.
+                activePositions = [...localPositions];
                 renderPortfolioTable();
                 updateHomePortfolioSurface();
-                setPositionFormStatus('Cloud portfolio storage is not configured for this deployment.', 'error');
+                if (authState.configured === true && authState.authenticated) {
+                    setPositionFormStatus('Cloud portfolio storage is not configured; changes stay on this device for this session.', 'error');
+                }
                 return;
             }
             portfolioRefreshInFlight = true;
@@ -6430,13 +6444,27 @@
                 setAuthStatus('Sign in before changing a cloud portfolio.', 'error');
                 return;
             }
-            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
-                setPositionFormStatus('Cloud portfolio storage is not configured for this deployment.', 'error');
-                return;
-            }
             const payload = positionPayloadFromForm();
             const validationMessage = validatePositionPayload(payload);
             if (validationMessage) { setPositionFormStatus(validationMessage, 'error'); return; }
+            if (!cloudWorkspaceEnabled()) {
+                const saved = {
+                    ...payload,
+                    id: editingPositionId || Date.now(),
+                    entry_underlying_price: Number(currentLivePrice) || 0,
+                    current_underlying_price: Number(currentLivePrice) || null,
+                    pnl: 0,
+                    pnl_percent: 0,
+                };
+                localPositions = editingPositionId
+                    ? localPositions.map(position => Number(position.id) === Number(editingPositionId) ? saved : position)
+                    : [saved, ...localPositions];
+                updatePortfolioState(saved);
+                const wasEditing = Boolean(editingPositionId);
+                cancelPositionEdit();
+                setPositionFormStatus(wasEditing ? 'Saved on this device for this session.' : 'Position saved on this device for this session.', 'success');
+                return;
+            }
             const portfolioId = cloudWorkspaceId(document.getElementById('form-portfolio-id')?.value);
             if (!editingPositionId && cloudWorkspaceEnabled() && portfolioId) payload.portfolio_id = portfolioId;
             const submit = document.querySelector('#pos-form .btn-submit');
@@ -6494,8 +6522,12 @@
                 setAuthStatus('Sign in before changing a cloud portfolio.', 'error');
                 return;
             }
-            if (authState.configured === true && authState.authenticated && !authState.cloudSyncEnabled) {
-                setPositionFormStatus('Cloud portfolio storage is not configured for this deployment.', 'error');
+            if (!cloudWorkspaceEnabled()) {
+                localPositions = localPositions.filter(position => Number(position.id) !== Number(id));
+                activePositions = activePositions.filter(position => Number(position.id) !== Number(id));
+                renderPortfolioTable();
+                updateHomePortfolioSurface();
+                setPositionFormStatus('Position removed from this device.', 'success');
                 return;
             }
             try {
