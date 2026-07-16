@@ -23,6 +23,7 @@
                 updateFavoriteButton();
             } catch (error) {
                 reportQuantoraError(error, { area: 'favorites-load' });
+                throw error;
             }
         }
 
@@ -61,6 +62,7 @@
                 renderRecentViewed(Array.isArray(data.items) ? data.items : []);
             } catch (error) {
                 reportQuantoraError(error, { area: 'recent-load' });
+                throw error;
             }
         }
 

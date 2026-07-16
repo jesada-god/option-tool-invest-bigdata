@@ -53,5 +53,6 @@
             screen.classList.add('is-visible');
             screen.setAttribute('aria-hidden', 'false');
         }
+        throw error;
     }
 }());

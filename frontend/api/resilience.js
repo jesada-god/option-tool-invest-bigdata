@@ -231,10 +231,8 @@
     global.installQuantoraFetchHardening = installFetch;
     global.addEventListener('error', event => {
         safeError(event.error || new Error(event.message || 'Client error'), { area: 'window' });
-        event.preventDefault();
     });
     global.addEventListener('unhandledrejection', event => {
         safeError(event.reason, { area: 'promise' });
-        event.preventDefault();
     });
 }(window));

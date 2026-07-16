@@ -48,6 +48,23 @@ test('frontend auth exchanges fragment tokens without persistent token storage',
     assert.doesNotMatch(auth, /(localStorage|sessionStorage)\.(setItem|getItem)\([^\n]*(access_token|refresh_token)/);
 });
 
+test('bootstrap identifies and rethrows every guarded startup failure', () => {
+    const boot = read('frontend/app-shell/boot.js');
+    for (const step of [
+        'loadAuthSession',
+        'prepareTerminalWorkspaceRestore',
+        'applyRouteFromLocation',
+        'loadRouteModule',
+        'finishTerminalWorkspaceRestore',
+    ]) {
+        assert.match(boot, new RegExp(`runBootstrapStep\\('${step}'`));
+    }
+    assert.match(boot, /console\.warn\('\[Quantora bootstrap failed\]'/);
+    assert.match(boot, /stack: exception\.stack \|\| null/);
+    assert.match(boot, /response\.clone\(\)\.text\(\)/);
+    assert.match(boot, /throw error;/);
+});
+
 test('cache, route restoration, and service-worker guards remain enabled', () => {
     const cache = read('frontend/api/cache.js');
     const router = read('frontend/app-shell/router.js');
@@ -56,5 +73,5 @@ test('cache, route restoration, and service-worker guards remain enabled', () =>
     assert.match(cache, /respectingAbort/);
     assert.match(router, /requested\.startsWith\('portfolio\/'\)/);
     assert.match(worker, /const CACHE_NAME = 'quantora-shell-v\d+'/);
-    assert.match(worker, /if \(isShellAsset\) \{\s+const cached = await caches\.match\(event\.request\);\s+if \(cached\) return cached;/);
+    assert.match(worker, /if \(isShellAsset && !bypassCache\) \{\s+const cached = await caches\.match\(event\.request\);\s+if \(cached\) return cached;/);
 });

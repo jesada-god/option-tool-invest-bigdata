@@ -40,43 +40,35 @@
 
         async function loadAuthSession() {
             const sessionEpoch = ++authSessionEpoch;
-            try {
-                const res = await authFetch('/api/auth/me', { cache: 'no-store' });
+            const res = await authFetch('/api/auth/me', { cache: 'no-store' });
+            if (sessionEpoch !== authSessionEpoch) return;
+            if (res.status === 404) {
+                authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
+            } else if (!res.ok) {
+                const responseBody = await res.text();
+                const error = new Error(`Account session request failed: HTTP ${res.status} ${res.statusText}.`);
+                error.name = 'HttpResponseError';
+                error.httpStatus = res.status;
+                error.responseUrl = res.url;
+                error.responseBody = responseBody;
+                throw error;
+            } else {
+                const data = await res.json();
                 if (sessionEpoch !== authSessionEpoch) return;
-                if (res.status === 404) {
-                    authState = { ...authState, configured: false, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
-                } else if (!res.ok) {
-                    // A server-side auth configuration failure is not the
-                    // unauthenticated legacy mode. Keep data APIs gated so
-                    // bootstrap does not make requests guaranteed to get 503.
-                    const error = await res.json().catch(() => ({}));
-                    reportQuantoraError(new Error('Account session is unavailable.'), { area: 'auth-session' });
-                    authState = { ...authState, configured: true, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
-                } else {
-                    const data = await res.json();
-                    if (sessionEpoch !== authSessionEpoch) return;
-                    authState = {
-                        ...authState,
-                        configured: Boolean(data.auth_enabled ?? data.configured),
-                        authenticated: Boolean(data.authenticated),
-                        user: data.user || data.profile || null,
-                        // A missing field is not a provider-disable signal.
-                        // Keep the last known value so a partial/degraded
-                        // auth response cannot remove the Google entry point.
-                        googleEnabled: typeof data.google_enabled === 'boolean'
-                            ? data.google_enabled
-                            : authState.googleEnabled,
-                        cloudSyncEnabled: Boolean(data.cloud_sync_enabled),
-                        csrfToken: data.csrf_token || null,
-                    };
-                }
-            } catch (err) {
-                if (sessionEpoch !== authSessionEpoch) return;
-                reportQuantoraError(err, { area: 'auth-session' });
-                // A transport failure is not evidence that this is an
-                // auth-disabled legacy deployment. Keep cloud data paths
-                // gated until a successful session response says otherwise.
-                authState = { ...authState, configured: true, authenticated: false, user: null, cloudSyncEnabled: false, csrfToken: null };
+                authState = {
+                    ...authState,
+                    configured: Boolean(data.auth_enabled ?? data.configured),
+                    authenticated: Boolean(data.authenticated),
+                    user: data.user || data.profile || null,
+                    // A missing field is not a provider-disable signal.
+                    // Keep the last known value so a partial/degraded
+                    // auth response cannot remove the Google entry point.
+                    googleEnabled: typeof data.google_enabled === 'boolean'
+                        ? data.google_enabled
+                        : authState.googleEnabled,
+                    cloudSyncEnabled: Boolean(data.cloud_sync_enabled),
+                    csrfToken: data.csrf_token || null,
+                };
             }
             if (sessionEpoch !== authSessionEpoch) return;
             // A renewed session can belong to a different account. Clear the

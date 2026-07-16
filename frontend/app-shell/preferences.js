@@ -22,6 +22,7 @@
                 updateEMASeries();
             } catch (err) {
                 reportQuantoraError(err, { area: 'preferences-load' });
+                throw err;
             }
         }
 

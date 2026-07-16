@@ -414,7 +414,7 @@
                         updatePositionPortfolioSelector();
                         renderCloudWorkspaceManager();
                     }
-                    return false;
+                    throw error;
                 } finally {
                     if (requestVersion === cloudWorkspace.requestVersion) {
                         cloudWorkspace.loading = false;
