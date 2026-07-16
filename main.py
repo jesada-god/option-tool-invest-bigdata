@@ -343,7 +343,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self'; script-src-attr 'unsafe-inline'; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com https://*.googleusercontent.com; font-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; "
         "connect-src 'self' ws: wss:; worker-src 'self'; manifest-src 'self'; object-src 'none'; base-uri 'self'; "
         "frame-ancestors 'none'; form-action 'self'",
     )

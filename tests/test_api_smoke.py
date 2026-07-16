@@ -26,8 +26,9 @@ class ApiSmokeTests(unittest.TestCase):
         self.assertEqual(response.headers["cross-origin-resource-policy"], "same-origin")
         self.assertIn("max-age=31536000", response.headers["strict-transport-security"])
         csp = response.headers["content-security-policy"]
-        self.assertIn("script-src 'self'", csp)
-        self.assertNotIn("https://unpkg.com", csp)
+        self.assertIn("script-src 'self';", csp)
+        self.assertIn("img-src 'self' data:;", csp)
+        self.assertNotIn("https://", csp)
         self.assertIn("script-src-attr 'unsafe-inline'", csp)
         self.assertIn("worker-src 'self'", csp)
 

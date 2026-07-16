@@ -3,7 +3,9 @@
 
         async function bootTerminal() {
             if ('serviceWorker' in navigator) {
-                navigator.serviceWorker.register('/service-worker.js').catch(error => {
+                navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).then(registration => {
+                    return registration.update();
+                }).catch(error => {
                     reportQuantoraError(error, { area: 'service-worker' });
                 });
             }

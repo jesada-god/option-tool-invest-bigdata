@@ -2,7 +2,7 @@
    are intentionally never stored by this worker. */
 // Bump this whenever the application shell changes so an older offline page
 // cannot mask a newly deployed UI after the worker activates.
-const CACHE_NAME = 'quantora-shell-v7';
+const CACHE_NAME = 'quantora-shell-v8';
 const SHELL = [
   '/', '/app.webmanifest', '/assets/app-shell.js',
   '/assets/vendor/lightweight-charts.standalone.production.js',
@@ -43,10 +43,10 @@ self.addEventListener('activate', event => {
 self.addEventListener('fetch', event => {
   const url = new URL(event.request.url);
   if (event.request.method !== 'GET') return;
+  if (url.origin !== self.location.origin) return;
   if (url.pathname.startsWith('/api/')) return;
   event.respondWith((async () => {
-    const isShellAsset = url.origin === self.location.origin
-      && (url.pathname === '/' || url.pathname === '/app.webmanifest' || url.pathname.startsWith('/assets/'));
+    const isShellAsset = url.pathname === '/' || url.pathname === '/app.webmanifest' || url.pathname.startsWith('/assets/');
     const bypassCache = event.request.cache === 'reload';
     // The shell is revisioned with CACHE_NAME, so cache-first avoids a
     // network round-trip for each route module. A hard refresh must still

@@ -43,6 +43,10 @@
             return String(source).trim().slice(0, 2).toUpperCase() || 'PT';
         }
 
+        function localProfileAvatarUrl(value) {
+            return typeof value === 'string' && /^data:image\/(?:jpeg|png|webp);base64,[A-Za-z0-9+/=]+$/i.test(value) ? value : '';
+        }
+
 
 
         function setProfileSummary() {
@@ -52,7 +56,7 @@
             const avatar = document.getElementById('profile-sheet-avatar');
             const name = document.getElementById('profile-sheet-name');
             const email = document.getElementById('profile-sheet-email');
-            const avatarUrl = user && user.avatar_url;
+            const avatarUrl = localProfileAvatarUrl(user?.avatar_url);
             [avatarButton, avatar].forEach(element => {
                 if (!element) return;
                 element.textContent = initials;
@@ -82,6 +86,7 @@
         function setProfileImagePreview(url) {
             const preview = document.getElementById('profile-image-preview');
             if (!preview) return;
+            url = localProfileAvatarUrl(url);
             preview.style.backgroundImage = url ? `url("${url}")` : '';
             preview.style.backgroundSize = url ? 'cover' : '';
             preview.style.backgroundPosition = url ? 'center' : '';
