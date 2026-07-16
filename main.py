@@ -22,7 +22,7 @@ from urllib.parse import urlencode
 from zoneinfo import ZoneInfo
 import yfinance as yf
 import pandas as pd
-from sqlalchemy.exc import IntegrityError, OperationalError
+from sqlalchemy.exc import IntegrityError, OperationalError, SQLAlchemyError
 from sqlalchemy import select
 
 # --- JSON safety helpers ------------------------------------------------
@@ -99,6 +99,7 @@ from app.auth import (
     consume_google_oauth,
     create_google_callback_url,
     create_redirect_url,
+    ensure_csrf_token,
     exchange_google_authorization_code,
     get_auth_settings,
     get_optional_current_user,
@@ -247,6 +248,28 @@ async def safe_database_operational_error(request: Request, exc: OperationalErro
     return JSONResponse(
         status_code=503,
         content={"detail": "Cloud storage is temporarily unavailable. Please retry."},
+        headers={"Retry-After": "5"},
+    )
+
+
+@app.exception_handler(SQLAlchemyError)
+async def safe_database_error(request: Request, exc: SQLAlchemyError):
+    """Keep schema/query failures from becoming non-JSON 500 responses."""
+    logger.exception("Database request failed on %s", request.url.path)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "Cloud storage is temporarily unavailable. Please retry."},
+        headers={"Retry-After": "5"},
+    )
+
+
+@app.exception_handler(Exception)
+async def safe_unexpected_error(request: Request, exc: Exception):
+    """Last-resort JSON response for API failures, with server-side traceback logging."""
+    logger.exception("Unhandled request failure method=%s path=%s", request.method, request.url.path)
+    return JSONResponse(
+        status_code=503,
+        content={"detail": "The service is temporarily unavailable. Please retry."},
         headers={"Retry-After": "5"},
     )
 
@@ -716,14 +739,17 @@ def get_runtime_auth_settings():
     try:
         return get_auth_settings()
     except AuthProviderError as exc:
-        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+        # Authentication configuration failures are deployment availability
+        # problems, not application crashes.
+        status_code = 503 if exc.status_code >= 500 else exc.status_code
+        raise HTTPException(status_code=status_code, detail=str(exc)) from exc
 
 
 def persistence_is_configured() -> bool:
     try:
         return load_persistence_settings().is_configured
     except PersistenceConfigurationError as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 def get_cloud_user_or_legacy(request: Request, response: Response, *, mutate: bool = False) -> CurrentUser | None:
@@ -1635,7 +1661,7 @@ def get_me(request: Request, response: Response):
         }
     google_enabled = google_callback_is_available(request, settings)
     user = get_optional_current_user(request, response)
-    csrf_token = response.headers.get("X-CSRF-Token") or request.cookies.get(CSRF_COOKIE)
+    csrf_token = ensure_csrf_token(request, response, settings) if user is not None else None
     if user is None:
         return {
             "auth_enabled": True,
@@ -1914,9 +1940,11 @@ def update_me(payload: ProfileUpdateModel, request: Request, response: Response)
     except OperationalError as exc:
         logger.exception("Profile update database failure for %s", user.id)
         raise HTTPException(status_code=503, detail="Profile storage is temporarily unavailable.") from exc
+    except HTTPException:
+        raise
     except Exception as exc:
         logger.exception("Unexpected profile update failure for %s", user.id)
-        raise HTTPException(status_code=500, detail="Unable to update profile right now.") from exc
+        raise HTTPException(status_code=503, detail="Unable to update profile right now.") from exc
 
 
 @app.get("/api/preferences")
@@ -3454,7 +3482,7 @@ def get_gauges(
         raise
     except Exception as exc:
         logger.exception("Gauges endpoint failed for %s", ticker)
-        raise HTTPException(status_code=500, detail="Unable to calculate gauges right now.") from exc
+        raise HTTPException(status_code=503, detail="Unable to calculate gauges right now.") from exc
 
 
 

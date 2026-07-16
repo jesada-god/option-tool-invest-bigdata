@@ -60,7 +60,7 @@ def _read_bool(value: str | None, default: bool) -> bool:
         return True
     if normalized in {"0", "false", "no", "off"}:
         return False
-    raise AuthProviderError("Invalid boolean authentication configuration.", status_code=500)
+    raise AuthProviderError("Invalid boolean authentication configuration.", status_code=503)
 
 
 def _read_positive_int(key: str, default: int) -> int:
@@ -70,9 +70,9 @@ def _read_positive_int(key: str, default: int) -> int:
     try:
         value = int(raw)
     except ValueError as exc:
-        raise AuthProviderError(f"{key} must be an integer.", status_code=500) from exc
+        raise AuthProviderError(f"{key} must be an integer.", status_code=503) from exc
     if value < 1:
-        raise AuthProviderError(f"{key} must be positive.", status_code=500)
+        raise AuthProviderError(f"{key} must be positive.", status_code=503)
     return value
 
 
@@ -110,10 +110,10 @@ def get_auth_settings() -> AuthSettings:
     public_app_url = os.getenv("PUBLIC_APP_URL", "").strip().rstrip("/") or None
     parsed_url = urlsplit(raw_url) if raw_url else None
     if raw_url and (parsed_url is None or parsed_url.scheme not in {"http", "https"} or not parsed_url.netloc):
-        raise AuthProviderError("SUPABASE_URL must be an absolute http(s) URL.", status_code=500)
+        raise AuthProviderError("SUPABASE_URL must be an absolute http(s) URL.", status_code=503)
     if bool(raw_url) != bool(anon_key):
         raise AuthProviderError(
-            "Set both SUPABASE_URL and SUPABASE_ANON_KEY, or leave both blank.", status_code=500
+            "Set both SUPABASE_URL and SUPABASE_ANON_KEY, or leave both blank.", status_code=503
         )
     parsed_public_app_url = None
     if public_app_url:
@@ -128,15 +128,15 @@ def get_auth_settings() -> AuthSettings:
             or parsed_public_app_url.query
             or parsed_public_app_url.fragment
         ):
-            raise AuthProviderError("PUBLIC_APP_URL must be an absolute origin URL.", status_code=500)
+            raise AuthProviderError("PUBLIC_APP_URL must be an absolute origin URL.", status_code=503)
         if scheme != "https" and hostname not in {"localhost", "127.0.0.1", "::1"}:
             raise AuthProviderError(
-                "PUBLIC_APP_URL must use HTTPS outside local development.", status_code=500
+                "PUBLIC_APP_URL must use HTTPS outside local development.", status_code=503
             )
     default_secure = bool(parsed_public_app_url and parsed_public_app_url.scheme.lower() == "https")
     oauth_state_secret = os.getenv("AUTH_STATE_SECRET", "").strip() or None
     if oauth_state_secret is not None and len(oauth_state_secret) < 32:
-        raise AuthProviderError("AUTH_STATE_SECRET must contain at least 32 characters.", status_code=500)
+        raise AuthProviderError("AUTH_STATE_SECRET must contain at least 32 characters.", status_code=503)
     return AuthSettings(
         supabase_url=raw_url or None,
         anon_key=anon_key or None,
@@ -227,7 +227,7 @@ def create_redirect_url(request: Request, settings: AuthSettings) -> str:
     host = request.url.hostname or ""
     if host not in {"localhost", "127.0.0.1", "::1"}:
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Set PUBLIC_APP_URL before enabling cloud authentication in production.",
         )
     return str(request.base_url).rstrip("/")
@@ -491,6 +491,32 @@ def set_session_cookies(
     return csrf_token
 
 
+def ensure_csrf_token(request: Request, response: Response, settings: AuthSettings) -> str:
+    """Return the browser's double-submit token, creating one when absent.
+
+    Sessions created before CSRF protection was introduced can still have a
+    valid HttpOnly access/refresh pair but no readable CSRF cookie.  Without
+    bootstrapping it on ``/api/auth/me``, the browser has no value it can send
+    on its first protected write and every mutation is rejected with 403.
+    """
+    token = response.headers.get("X-CSRF-Token") or request.cookies.get(CSRF_COOKIE)
+    if not token:
+        token = secrets.token_urlsafe(32)
+        response.set_cookie(
+            CSRF_COOKIE,
+            token,
+            httponly=False,
+            max_age=60 * 60 * 24 * 30 if request.cookies.get(REMEMBER_COOKIE) == "1" else None,
+            path="/",
+            secure=settings.secure_cookies,
+            samesite="lax",
+        )
+    # The header lets the client adopt a token issued during a transparent
+    # access-token refresh without having to wait for another page load.
+    response.headers["X-CSRF-Token"] = token
+    return token
+
+
 def clear_session_cookies(response: Response, settings: AuthSettings) -> None:
     for key, httponly in (
         (ACCESS_COOKIE, True),
@@ -539,7 +565,7 @@ def verify_request_origin(request: Request, settings: AuthSettings) -> None:
         host = request.url.hostname or ""
         if host not in {"localhost", "127.0.0.1", "::1"}:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
                 detail="Set PUBLIC_APP_URL before enabling cloud authentication in production.",
             )
         expected_source = str(request.base_url)

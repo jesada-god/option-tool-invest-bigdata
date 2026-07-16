@@ -19,6 +19,7 @@ from app.auth import (
     begin_google_oauth,
     coordinated_refresh_session,
     consume_google_oauth,
+    ensure_csrf_token,
     get_optional_current_user,
     password_sign_up,
     resend_signup_confirmation,
@@ -148,6 +149,16 @@ class AuthSecurityTests(unittest.TestCase):
         self.assertEqual(cookies[CSRF_COOKIE], csrf)
         self.assertEqual(cookies[REMEMBER_COOKIE], "1")
 
+    def test_missing_csrf_cookie_is_bootstrapped_for_existing_session(self):
+        request = make_request(headers={})
+        response = Response()
+
+        csrf = ensure_csrf_token(request, response, self.settings)
+
+        cookies = cookies_from_response(response)
+        self.assertEqual(cookies[CSRF_COOKIE], csrf)
+        self.assertEqual(response.headers["X-CSRF-Token"], csrf)
+
     def test_production_request_without_public_app_url_is_rejected(self):
         unsafe_settings = AuthSettings(
             supabase_url=self.settings.supabase_url,
@@ -163,7 +174,7 @@ class AuthSecurityTests(unittest.TestCase):
             verify_request_origin(
                 make_request(headers={"Origin": "https://terminal.example"}), unsafe_settings
             )
-        self.assertEqual(rejected.exception.status_code, 500)
+        self.assertEqual(rejected.exception.status_code, 503)
 
     def test_rotating_refresh_success_is_shared_briefly_across_tabs(self):
         refresh_token = f"refresh-{uuid.uuid4()}"
