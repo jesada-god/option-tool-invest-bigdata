@@ -3,6 +3,7 @@
 // These stay classic scripts deliberately: inline controls and existing
 // non-module assets share their global functions and state with this shell.
 (async function loadApplicationShell() {
+    const APP_SHELL_REVISION = '20260716.3';
     const modules = [
         '../state/store',
         '../state/app',
@@ -35,7 +36,8 @@
     function loadClassicModule(name) {
         return new Promise((resolve, reject) => {
             const script = document.createElement('script');
-            script.src = name.startsWith('../') ? `/assets/${name.slice(3)}.js` : `/assets/app-shell/${name}.js`;
+            const asset = name.startsWith('../') ? `/assets/${name.slice(3)}.js` : `/assets/app-shell/${name}.js`;
+            script.src = `${asset}?v=${APP_SHELL_REVISION}`;
             script.async = false;
             script.onload = resolve;
             script.onerror = () => reject(new Error(`Unable to load application module: ${name}`));

@@ -2,7 +2,7 @@
    are intentionally never stored by this worker. */
 // Bump this whenever the application shell changes so an older offline page
 // cannot mask a newly deployed UI after the worker activates.
-const CACHE_NAME = 'quantora-shell-v8';
+const CACHE_NAME = 'quantora-shell-v10';
 const SHELL = [
   '/', '/app.webmanifest', '/assets/app-shell.js',
   '/assets/vendor/lightweight-charts.standalone.production.js',
@@ -47,18 +47,11 @@ self.addEventListener('fetch', event => {
   if (url.pathname.startsWith('/api/')) return;
   event.respondWith((async () => {
     const isShellAsset = url.pathname === '/' || url.pathname === '/app.webmanifest' || url.pathname.startsWith('/assets/');
-    const bypassCache = event.request.cache === 'reload';
-    // The shell is revisioned with CACHE_NAME, so cache-first avoids a
-    // network round-trip for each route module. A hard refresh must still
-    // revalidate the shell so it can receive a newly activated worker's files.
-    if (isShellAsset && !bypassCache) {
-      const cached = await caches.match(event.request);
-      if (cached) return cached;
-    }
     try {
       const response = await fetch(event.request);
-      // Keep static assets available after their first successful load. This
-      // covers future shell modules without ever caching market or account data.
+      // Shell code must be fresh after a deployment. The cache is retained
+      // only as an offline fallback, so a new boot fix cannot be hidden by a
+      // previous worker's cached JavaScript.
       if (isShellAsset && response.ok) {
         const cache = await caches.open(CACHE_NAME);
         await cache.put(event.request, response.clone());

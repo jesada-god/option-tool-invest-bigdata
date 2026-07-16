@@ -75,7 +75,10 @@
                     return true;
                 });
             renderWatchlist();
-            updateHomeWatchlistSurface();
+            // The watchlist route can be opened directly, before the home
+            // route (which owns this optional summary surface) is loaded.
+            // Updating it must never make the route bootstrap fail.
+            if (typeof updateHomeWatchlistSurface === 'function') updateHomeWatchlistSurface();
         }
 
         function renderWatchlist() {

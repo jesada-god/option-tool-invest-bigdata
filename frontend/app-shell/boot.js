@@ -59,8 +59,25 @@
             }
         }
 
+        async function runOptionalBootstrapStep(step, operation) {
+            try {
+                return await runBootstrapStep(step, operation);
+            } catch (error) {
+                // Local workspace restoration improves continuity but is not
+                // required to render a valid authenticated application.
+                console.warn('[Quantora bootstrap degraded]', { step, error });
+                return undefined;
+            }
+        }
+
         async function bootTerminal() {
             if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.addEventListener('controllerchange', () => {
+                    // The active worker changed while this shell was loading;
+                    // reload once so the page and its cached modules share a
+                    // single deployed revision.
+                    window.location.reload();
+                }, { once: true });
                 navigator.serviceWorker.register('/service-worker.js', { updateViaCache: 'none' }).then(registration => {
                     return registration.update();
                 }).catch(error => {
@@ -70,7 +87,7 @@
             setInitialSkeletonLoading(true);
             setNetworkStatus(navigator.onLine);
             applyLanguage(userPreferences.language);
-            const { loadClassicAsset } = await import('/assets/utils/load-classic.js');
+            const { loadClassicAsset } = await import('/assets/utils/load-classic.js?v=20260716.3');
             await loadClassicAsset('/assets/components/indicators.js');
             await loadClassicAsset('/assets/api/resilience.js');
             await loadClassicAsset('/assets/api/cache.js');
@@ -80,7 +97,7 @@
             await consumeAuthHash();
             try {
                 await runBootstrapStep('loadAuthSession', () => loadAuthSession());
-                await runBootstrapStep('prepareTerminalWorkspaceRestore', () => prepareTerminalWorkspaceRestore());
+                await runOptionalBootstrapStep('prepareTerminalWorkspaceRestore', () => prepareTerminalWorkspaceRestore());
                 await runBootstrapStep('applyRouteFromLocation', () => applyRouteFromLocation());
                 const initialRoute = currentTerminalRoute();
                 await runBootstrapStep('loadRouteModule', () => loadRouteModule(
@@ -89,7 +106,7 @@
                 if (typeof renderIndicatorsPanel === 'function') renderIndicatorsPanel();
                 if (typeof startChartAutoRefresh === 'function') startChartAutoRefresh();
                 if (typeof startPortfolioAutoRefresh === 'function') startPortfolioAutoRefresh();
-                await runBootstrapStep('finishTerminalWorkspaceRestore', () => finishTerminalWorkspaceRestore());
+                await runOptionalBootstrapStep('finishTerminalWorkspaceRestore', () => finishTerminalWorkspaceRestore());
                 setTerminalWorkspaceBooted();
             } catch (error) {
                 if (!error || typeof error !== 'object' || !loggedBootstrapErrors.has(error)) {

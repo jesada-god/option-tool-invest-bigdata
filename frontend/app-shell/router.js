@@ -8,13 +8,14 @@
             home: 'home-section', watchlist: 'watchlist-row', search: 'search-input',
             analysis: 'tvchart', tools: 'tools-section', portfolio: 'portfolio-section', profile: 'profile-sheet',
         });
+        const ROUTE_MODULE_REVISION = '20260716.3';
         const ROUTE_MODULE_IMPORTERS = Object.freeze({
-            home: () => import('/assets/routes/home.js'),
-            watchlist: () => import('/assets/routes/watchlist.js'),
-            search: () => import('/assets/routes/search.js'),
-            analysis: () => import('/assets/routes/analysis.js'),
-            tools: () => import('/assets/routes/tools.js'),
-            portfolio: () => import('/assets/routes/portfolio.js'),
+            home: () => import(`/assets/routes/home.js?v=${ROUTE_MODULE_REVISION}`),
+            watchlist: () => import(`/assets/routes/watchlist.js?v=${ROUTE_MODULE_REVISION}`),
+            search: () => import(`/assets/routes/search.js?v=${ROUTE_MODULE_REVISION}`),
+            analysis: () => import(`/assets/routes/analysis.js?v=${ROUTE_MODULE_REVISION}`),
+            tools: () => import(`/assets/routes/tools.js?v=${ROUTE_MODULE_REVISION}`),
+            portfolio: () => import(`/assets/routes/portfolio.js?v=${ROUTE_MODULE_REVISION}`),
         });
         const routeResourceLoads = new Map();
         const routeModuleLoads = new Map();

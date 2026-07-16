@@ -26,18 +26,25 @@ test('classic asset loader loads each requested asset once', async () => {
     const second = loadClassicAsset('/assets/pages/home.js');
     assert.strictEqual(first, second);
     await first;
-    assert.deepEqual(appended, ['/assets/pages/home.js']);
+    assert.deepEqual(appended, ['/assets/pages/home.js?v=20260716.3']);
 });
 
 test('route smoke coverage includes every navigation destination and chunk', () => {
     const router = read('frontend/app-shell/router.js');
     const expected = ['home', 'watchlist', 'search', 'analysis', 'tools', 'portfolio'];
     for (const route of expected) {
-        assert.match(router, new RegExp(`${route}: \\(\\) => import\\('/assets/routes/${route}\\.js'\\)`));
+        const importer = `${route}: () => import(` + '`' + `/assets/routes/${route}.js?v=\${ROUTE_MODULE_REVISION}` + '`' + ')';
+        assert.ok(router.includes(importer), `missing revisioned ${route} route importer`);
         assert.ok(fs.existsSync(path.join(root, 'frontend', 'routes', `${route}.js`)));
     }
     assert.match(router, /const routeModuleLoads = new Map\(\)/);
     assert.match(router, /function prefetchRouteModule\(target\)/);
+});
+
+test('the watchlist route can boot before the home route is loaded', () => {
+    const watchlist = read('frontend/pages/watchlist.js');
+    assert.match(watchlist, /typeof updateHomeWatchlistSurface === 'function'/);
+    assert.doesNotMatch(watchlist, /\n\s*updateHomeWatchlistSurface\(\);/);
 });
 
 test('frontend auth exchanges fragment tokens without persistent token storage', () => {
@@ -52,10 +59,8 @@ test('bootstrap identifies and rethrows every guarded startup failure', () => {
     const boot = read('frontend/app-shell/boot.js');
     for (const step of [
         'loadAuthSession',
-        'prepareTerminalWorkspaceRestore',
         'applyRouteFromLocation',
         'loadRouteModule',
-        'finishTerminalWorkspaceRestore',
     ]) {
         assert.match(boot, new RegExp(`runBootstrapStep\\('${step}'`));
     }
@@ -63,6 +68,8 @@ test('bootstrap identifies and rethrows every guarded startup failure', () => {
     assert.match(boot, /stack: exception\.stack \|\| null/);
     assert.match(boot, /response\.clone\(\)\.text\(\)/);
     assert.match(boot, /throw error;/);
+    assert.match(boot, /runOptionalBootstrapStep\('prepareTerminalWorkspaceRestore'/);
+    assert.match(boot, /runOptionalBootstrapStep\('finishTerminalWorkspaceRestore'/);
 });
 
 test('an authenticated cloud-sync degradation remains a non-fatal local mode', () => {
@@ -125,5 +132,6 @@ test('cache, route restoration, and service-worker guards remain enabled', () =>
     assert.match(cache, /respectingAbort/);
     assert.match(router, /requested\.startsWith\('portfolio\/'\)/);
     assert.match(worker, /const CACHE_NAME = 'quantora-shell-v\d+'/);
-    assert.match(worker, /if \(isShellAsset && !bypassCache\) \{\s+const cached = await caches\.match\(event\.request\);\s+if \(cached\) return cached;/);
+    assert.match(worker, /const response = await fetch\(event\.request\);/);
+    assert.match(worker, /catch \(_\) \{\s+const cached = await caches\.match\(event\.request\);\s+if \(cached\) return cached;/);
 });
