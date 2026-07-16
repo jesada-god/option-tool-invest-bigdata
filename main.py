@@ -3204,7 +3204,11 @@ def add_position(pos: ValidatedPositionModel, request: Request, response: Respon
     try:
         entry_price = get_base_price(pos.ticker)
     except RuntimeError as exc:
-        raise HTTPException(status_code=503, detail="A current market price is required to add this position.") from exc
+        # Opening a position is a durable workspace action; it must not be
+        # blocked by a transient quote-provider outage. The read endpoint
+        # marks its P&L unavailable until a live quote is present.
+        logger.warning("Opening position without entry quote ticker=%s: %s", pos.ticker, exc)
+        entry_price = 0.0
     if user is None:
         new_pos = pos.model_dump()
         new_pos.update({
@@ -3438,6 +3442,9 @@ def get_gauges(
                 "current_iv": None,
                 "iv_history": [],
             }
+        if not isinstance(stats, dict):
+            logger.warning("Gauge statistics payload was malformed for %s", ticker)
+            stats = {"indicators": {}, "ratings": {}, "current_iv": None, "iv_history": []}
 
         # Gauges are public analysis.  Cloud storage is optional enrichment
         # for portfolio Greeks, not a prerequisite for rendering the suite.
@@ -3465,15 +3472,25 @@ def get_gauges(
             chain_summary = None
         current_iv = stats.get("current_iv") or 0.30
 
-        gauges = gauges_engine.compute_gauges(
-            technical_indicators=stats.get("indicators", {}),
-            ratings=stats.get("ratings", {}),
-            current_iv=current_iv,
-            iv_history=stats.get("iv_history", []),
-            portfolio_greeks=portfolio_greeks,
-            account_size=account_size,
-            options_chain_summary=chain_summary,
-        )
+        try:
+            gauges = gauges_engine.compute_gauges(
+                technical_indicators=stats.get("indicators", {}),
+                ratings=stats.get("ratings", {}),
+                current_iv=current_iv,
+                iv_history=stats.get("iv_history", []),
+                portfolio_greeks=portfolio_greeks,
+                account_size=account_size,
+                options_chain_summary=chain_summary,
+            )
+        except Exception as exc:
+            # This panel is informational. Return documented unavailable
+            # states instead of failing the complete suite on partial data.
+            logger.warning("Gauge calculation fallback for %s: %s", ticker, exc)
+            gauges = gauges_engine.compute_gauges(
+                technical_indicators={}, ratings={}, current_iv=0.30,
+                iv_history=[], portfolio_greeks=None,
+                account_size=account_size, options_chain_summary=None,
+            )
         logger.debug("Gauge suite rendered ticker=%s gauges=%d", ticker, len(gauges))
         return sanitize_json({"ticker": ticker, "gauges": gauges, "portfolio_context": pg})
     except HTTPException:

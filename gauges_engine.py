@@ -102,11 +102,26 @@ def compute_gauges(*, technical_indicators: dict, ratings: dict, current_iv: flo
         {'call_oi': int, 'put_oi': int, 'call_volume': int, 'put_volume': int,
          'net_gamma_notional': float}  -- pass this in if a live chain is available
     """
+    # Provider payloads are best-effort. Malformed ratings must yield the
+    # suite's neutral/unavailable states, not crash the public endpoint.
+    technical_indicators = technical_indicators if isinstance(technical_indicators, dict) else {}
+    ratings = ratings if isinstance(ratings, dict) else {}
+
+    def _rating(name: str) -> dict:
+        value = ratings.get(name, {})
+        if not isinstance(value, dict):
+            return {}
+        reasons = value.get("reasons", [])
+        return {**value, "reasons": reasons if isinstance(reasons, list) else []}
+
     gauges = {}
 
     # --- Bullish / Bearish score (derived from momentum + trend ratings) ---
-    mom = _finite(ratings.get("momentum_rating", {}).get("score", 50)) or 50.0
-    trend = _finite(ratings.get("trend_rating", {}).get("score", 50)) or 50.0
+    momentum_rating = _rating("momentum_rating")
+    trend_rating = _rating("trend_rating")
+    volatility_rating = _rating("volatility_rating")
+    mom = _finite(momentum_rating.get("score", 50)) or 50.0
+    trend = _finite(trend_rating.get("score", 50)) or 50.0
     bullish = _clip(0.5 * mom + 0.5 * trend)
     bearish = _clip(100 - bullish)
     gauges["bullish_score"] = Gauge(_round_score(bullish), _label(bullish), [
@@ -115,8 +130,8 @@ def compute_gauges(*, technical_indicators: dict, ratings: dict, current_iv: flo
     gauges["bearish_score"] = Gauge(_round_score(bearish), _label(bearish),
                                      ["Mirror of bullish score (100 - bullish)"])
 
-    gauges["momentum_score"] = Gauge(_round_score(mom), _label(mom), ratings.get("momentum_rating", {}).get("reasons", []))
-    gauges["trend_score"] = Gauge(_round_score(trend), _label(trend), ratings.get("trend_rating", {}).get("reasons", []))
+    gauges["momentum_score"] = Gauge(_round_score(mom), _label(mom), momentum_rating.get("reasons", []))
+    gauges["trend_score"] = Gauge(_round_score(trend), _label(trend), trend_rating.get("reasons", []))
 
     # --- IV score / rank / percentile ---
     ivrp = iv_rank_percentile(_finite(current_iv) or 0.0, iv_history or [])
@@ -187,7 +202,7 @@ def compute_gauges(*, technical_indicators: dict, ratings: dict, current_iv: flo
         None, "N/A", ["Derived from institutional + dark-pool + options-flow signals, none of which are supplied"])
 
     # --- Sentiment / Fear index: proxy from volatility + momentum until a news-sentiment feed is wired in ---
-    vol_score = _finite(ratings.get("volatility_rating", {}).get("score", 50)) or 50.0
+    vol_score = _finite(volatility_rating.get("score", 50)) or 50.0
     fear_index = _clip(0.6 * vol_score + 0.4 * (100 - mom))
     gauges["market_fear_index"] = Gauge(_round_score(fear_index), _label(fear_index, bearish_bullish=False), [
         f"Proxy from volatility rating ({vol_score}) and inverse momentum ({100-mom})",

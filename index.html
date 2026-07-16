@@ -3119,7 +3119,14 @@
         function authHeaders(includeJson = false) {
             const headers = {};
             if (includeJson) headers['Content-Type'] = 'application/json';
-            if (authState.csrfToken) headers['X-CSRF-Token'] = authState.csrfToken;
+            // Prefer the readable double-submit cookie to cached state so a
+            // token refreshed in another tab cannot cause a stale-token 403.
+            const csrfCookie = document.cookie.split('; ').find(cookie => cookie.startsWith('pt_csrf='));
+            const csrfToken = csrfCookie ? decodeURIComponent(csrfCookie.slice('pt_csrf='.length)) : authState.csrfToken;
+            if (csrfToken) {
+                authState.csrfToken = csrfToken;
+                headers['X-CSRF-Token'] = csrfToken;
+            }
             return headers;
         }
 
@@ -4409,12 +4416,17 @@
         }
 
         async function saveProfileDetails() {
-            const username = document.getElementById('profile-display-name')?.value.trim();
-            if (!username || !/^[A-Za-z0-9_.-]{3,32}$/.test(username)) {
+            const username = document.getElementById('profile-display-name')?.value.trim() || '';
+            if (username && !/^[A-Za-z0-9_.-]{3,32}$/.test(username)) {
                 setAuthStatus('ชื่อที่แสดงต้องมี 3–32 ตัวอักษร และใช้ได้เฉพาะตัวอักษร ตัวเลข จุด ขีดล่าง หรือขีดกลาง', 'error');
                 return;
             }
-            const payload = { username };
+            if (!username && !pendingProfileAvatarUrl) {
+                setAuthStatus('Choose a username or profile image to save.', 'error');
+                return;
+            }
+            const payload = {};
+            if (username) payload.username = username;
             if (pendingProfileAvatarUrl) payload.avatar_url = pendingProfileAvatarUrl;
             try {
                 const response = await authFetch('/api/me', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload) });
@@ -4604,13 +4616,12 @@
             resetAlertCenter();
             renderProfileAuthContent();
             if (authState.authenticated && authState.cloudSyncEnabled) {
-                await loadCloudPreferences();
-                if (sessionEpoch !== authSessionEpoch) return;
-                await loadCloudFavorites();
-                if (sessionEpoch !== authSessionEpoch) return;
-                await loadRecentViewed();
-                if (sessionEpoch !== authSessionEpoch) return;
-                await loadCloudWorkspace();
+                await Promise.all([
+                    loadCloudPreferences(),
+                    loadCloudFavorites(),
+                    loadRecentViewed(),
+                    loadCloudWorkspace(),
+                ]);
                 if (sessionEpoch !== authSessionEpoch) return;
                 void refreshAlertCenter({ quiet: true });
                 startAlertCenterPolling();
@@ -5903,15 +5914,17 @@
             document.getElementById('stats-title').innerText = `${context.ticker} Key Statistics`;
 
             try {
-                const [statsRes, chartRes] = await Promise.all([
+                const [statsRes, chartRes, indRes] = await Promise.all([
                     fetch(`/api/stats?ticker=${encodeURIComponent(context.ticker)}`, { signal: context.signal, cache: 'no-store' }),
                     fetch(`/api/chart-data?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`, { signal: context.signal, cache: 'no-store' }),
+                    fetch(`/api/indicators?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`, { signal: context.signal, cache: 'no-store' }),
                 ]);
                 if (!isCurrentView(context)) return;
                 if (!statsRes.ok) throw new Error(`Stats request failed: ${statsRes.status} ${statsRes.statusText}`);
                 if (!chartRes.ok) throw new Error(`Chart-data request failed: ${chartRes.status} ${chartRes.statusText}`);
+                if (!indRes.ok) throw new Error(`Indicators request failed: ${indRes.status} ${indRes.statusText}`);
 
-                const [stats, chartData] = await Promise.all([statsRes.json(), chartRes.json()]);
+                const [stats, chartData, indicators] = await Promise.all([statsRes.json(), chartRes.json(), indRes.json()]);
                 if (!isCurrentView(context)) return;
                 if (!Array.isArray(chartData) || chartData.length === 0) {
                     throw new Error('Chart-data response empty or invalid');
@@ -5968,17 +5981,12 @@
                 requestAnimationFrame(syncPriceScaleWidths);
                 renderDashboardOverlay();
 
-                const indRes = await fetch(`/api/indicators?ticker=${encodeURIComponent(context.ticker)}&timeframe=${encodeURIComponent(context.timeframe)}`, { signal: context.signal, cache: 'no-store' });
-                if (!isCurrentView(context)) return;
-                if (!indRes.ok) throw new Error(`Indicators request failed: ${indRes.status} ${indRes.statusText}`);
-                const indicators = await indRes.json();
                 if (!isCurrentView(context)) return;
                 srData = indicators;
                 renderSRLadder();
 
                 if (currentMarketSession === 'REGULAR') initWebSocket(context);
                 else closeLivePriceSocket();
-                fetchPortfolio();
                 window.setTimeout(() => { if (isCurrentView(context)) resetChartView(); }, 50);
                 loadFullGauges(context);
             } catch (err) {
@@ -7750,8 +7758,7 @@
             await consumeAuthHash();
             try {
                 await loadAuthSession();
-                await fetchWatchlist();
-                await fetchDashboardData();
+                await Promise.all([fetchWatchlist(), fetchDashboardData(), fetchPortfolio()]);
                 applyRouteFromLocation();
                 startChartAutoRefresh();
                 startPortfolioAutoRefresh();
