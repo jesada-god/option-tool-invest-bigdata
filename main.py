@@ -329,7 +329,7 @@ async def add_security_headers(request: Request, call_next):
     response.headers.setdefault(
         "Content-Security-Policy",
         "default-src 'self'; script-src 'self' 'unsafe-inline' https://unpkg.com; "
-        "style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self' data:; "
+        "style-src 'self' 'unsafe-inline'; img-src 'self' data: https://lh3.googleusercontent.com https://*.googleusercontent.com; font-src 'self' data:; "
         "connect-src 'self' ws: wss:; object-src 'none'; base-uri 'self'; "
         "frame-ancestors 'none'; form-action 'self'",
     )
@@ -762,22 +762,7 @@ def get_cloud_user_or_legacy(request: Request, response: Response, *, mutate: bo
             status_code=503,
             detail="Cloud sync requires DATABASE_URL in addition to Supabase Auth configuration.",
         )
-    try:
-        user = get_optional_current_user(request, response)
-    except HTTPException as exc:
-        if exc.status_code < 500:
-            raise
-        # A provider outage while resolving an old session is an
-        # unauthenticated/degraded browser state, not a reason to stop the
-        # market dashboard with an auth bootstrap 5xx.
-        return {
-            "auth_enabled": True,
-            "authenticated": False,
-            "google_enabled": google_enabled,
-            "cloud_sync_enabled": False,
-            "csrf_token": None,
-            "configuration_error": str(exc.detail),
-        }
+    user = get_optional_current_user(request, response)
     if user is None:
         raise HTTPException(status_code=401, detail="Sign in is required for cloud-synced data.")
     if mutate:
@@ -1720,7 +1705,22 @@ def get_me(request: Request, response: Response):
             raise
         cloud_sync_enabled = False
         persistence_configuration_error = str(exc.detail)
-    user = get_optional_current_user(request, response)
+    try:
+        user = get_optional_current_user(request, response)
+    except HTTPException as exc:
+        if exc.status_code < 500:
+            raise
+        # A provider outage while resolving an old session is an
+        # unauthenticated/degraded browser state, not a reason to stop the
+        # market dashboard with an auth bootstrap 5xx.
+        return {
+            "auth_enabled": True,
+            "authenticated": False,
+            "google_enabled": google_enabled,
+            "cloud_sync_enabled": False,
+            "csrf_token": None,
+            "configuration_error": str(exc.detail),
+        }
     csrf_token = ensure_csrf_token(request, response, settings) if user is not None else None
     if user is None:
         result = {
@@ -2831,7 +2831,7 @@ def get_stats(ticker: str = "NVDA"):
         raise
     except Exception as exc:
         logger.exception("Stats endpoint failed for %s", ticker)
-        raise HTTPException(status_code=503, detail="Market statistics are temporarily unavailable.") from exc
+        return {"success": True, "data": [], "message": "No market data available"}
 
 
 @app.get("/api/indicators")
@@ -2932,35 +2932,38 @@ def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Opti
 @app.get("/api/chart-data")
 def get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
     ticker = normalize_ticker(ticker)
-    cfg = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["1d"])
-    hist = get_raw_history(ticker, timeframe)
+    unavailable = {"success": True, "data": [], "message": "No market data available"}
+    try:
+        cfg = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["1d"])
+        hist = get_raw_history(ticker, timeframe)
+        required_columns = {"Open", "High", "Low", "Close"}
+        if hist is None or hist.empty or not required_columns.issubset(hist.columns):
+            return unavailable
 
-    if hist is None or hist.empty:
-        return []
-
-    hist = hist.copy()
-    hist['EMA20'] = hist['Close'].ewm(span=20, adjust=False).mean()
-    hist['EMA50'] = hist['Close'].ewm(span=50, adjust=False).mean()
-    hist['RSI'] = calculate_rsi(hist['Close'], 14)
-
-    is_intraday = cfg["interval"] not in ("1d", "1wk")
-
-    data = []
-    for date, row in hist.iterrows():
-        if pd.isna(row['Close']):
-            continue
-        t = int(date.timestamp()) if is_intraday else date.strftime("%Y-%m-%d")
-        vol = row['Volume'] if 'Volume' in hist.columns and not pd.isna(row.get('Volume')) else 0
-        data.append({
-            "time": t,
-            "open": round(row['Open'], 2), "high": round(row['High'], 2),
-            "low": round(row['Low'], 2), "close": round(row['Close'], 2),
-            "volume": int(vol) if vol else 0,
-            "ema20": round(row['EMA20'], 2) if not pd.isna(row['EMA20']) else None,
-            "ema50": round(row['EMA50'], 2) if not pd.isna(row['EMA50']) else None,
-            "rsi": round(row['RSI'], 2) if not pd.isna(row['RSI']) else 50
-        })
-    return data
+        hist = hist.copy()
+        hist['EMA20'] = hist['Close'].ewm(span=20, adjust=False).mean()
+        hist['EMA50'] = hist['Close'].ewm(span=50, adjust=False).mean()
+        hist['RSI'] = calculate_rsi(hist['Close'], 14)
+        is_intraday = cfg["interval"] not in ("1d", "1wk")
+        data = []
+        for date, row in hist.iterrows():
+            if any(pd.isna(row[column]) for column in required_columns):
+                continue
+            t = int(date.timestamp()) if is_intraday else date.strftime("%Y-%m-%d")
+            vol = row['Volume'] if 'Volume' in hist.columns and not pd.isna(row.get('Volume')) else 0
+            data.append({
+                "time": t,
+                "open": round(float(row['Open']), 2), "high": round(float(row['High']), 2),
+                "low": round(float(row['Low']), 2), "close": round(float(row['Close']), 2),
+                "volume": int(vol) if vol else 0,
+                "ema20": round(float(row['EMA20']), 2) if not pd.isna(row['EMA20']) else 0,
+                "ema50": round(float(row['EMA50']), 2) if not pd.isna(row['EMA50']) else 0,
+                "rsi": round(float(row['RSI']), 2) if not pd.isna(row['RSI']) else 50,
+            })
+        return sanitize_json(data) if data else unavailable
+    except Exception as exc:
+        logger.warning("Chart data unavailable for %s: %s", ticker, exc)
+        return unavailable
 
 # 👜 Smart Option Pocket Endpoints
 # ---------------------------------------------------------------------------
@@ -3540,8 +3543,6 @@ def get_gauges(
             user = get_cloud_user_or_legacy(request, response)
             position_source = logged_positions if user is None else get_cloud_option_positions(user)
         except HTTPException as exc:
-            if exc.status_code not in {401, 503}:
-                raise
             logger.info("Gauge portfolio context unavailable for %s: %s", ticker, exc.detail)
             position_source = []
         except Exception as exc:

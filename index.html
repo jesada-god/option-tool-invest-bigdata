@@ -2829,10 +2829,6 @@
             isNetworkOnline = Boolean(isOnline);
             const banner = document.getElementById('network-banner');
             if (banner) banner.classList.toggle('is-visible', !isNetworkOnline);
-            if (isNetworkOnline) {
-                void refreshChartOnly();
-                void loadAuthSession();
-            }
         }
 
         function setInitialSkeletonLoading(loading) {
@@ -4421,7 +4417,7 @@
 
         async function saveProfileDetails() {
             if (!authState.authenticated || !authState.cloudSyncEnabled) {
-                setAuthStatus('Cloud profile storage is not configured for this deployment.', 'error');
+                setAuthStatus('Cloud sync unavailable', 'error');
                 return;
             }
             const username = document.getElementById('profile-display-name')?.value.trim() || '';
@@ -4439,6 +4435,7 @@
             try {
                 const response = await authFetch('/api/me', { method: 'PUT', headers: authHeaders(true), body: JSON.stringify(payload) });
                 const data = await response.json().catch(() => ({}));
+                if (!response.ok && response.status >= 500) throw new Error('Cloud sync unavailable');
                 if (!response.ok) throw new Error(data.detail || 'ไม่สามารถบันทึกโปรไฟล์ได้');
                 authState.user = data.user || authState.user;
                 pendingProfileAvatarUrl = null;
@@ -5951,10 +5948,23 @@
                 if (!chartRes.ok) throw new Error(`Chart-data request failed: ${chartRes.status} ${chartRes.statusText}`);
                 if (!indRes.ok) throw new Error(`Indicators request failed: ${indRes.status} ${indRes.statusText}`);
 
-                const [stats, chartData, indicators] = await Promise.all([statsRes.json(), chartRes.json(), indRes.json()]);
+                const [statsPayload, chartPayload, indicators] = await Promise.all([statsRes.json(), chartRes.json(), indRes.json()]);
                 if (!isCurrentView(context)) return;
+                const showNoMarketData = () => {
+                    globalChartData = [];
+                    candleSeries.setData([]);
+                    volumeSeries.setData([]);
+                    document.getElementById('stats-title').innerText = 'No market data available';
+                };
+                if (statsPayload?.success === true && Array.isArray(statsPayload.data) && statsPayload.data.length === 0) {
+                    showNoMarketData();
+                    return;
+                }
+                const stats = statsPayload;
+                const chartData = Array.isArray(chartPayload) ? chartPayload : chartPayload?.data;
                 if (!Array.isArray(chartData) || chartData.length === 0) {
-                    throw new Error('Chart-data response empty or invalid');
+                    showNoMarketData();
+                    return;
                 }
 
                 const livePriceRaw = stats.current_price;
