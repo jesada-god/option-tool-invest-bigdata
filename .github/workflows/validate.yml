@@ -22,7 +22,7 @@ jobs:
         run: |
           python -m compileall -q .
           python scripts/check_python_quality.py
-          python scripts/validate_production_config.py
+          python -m scripts.validate_production_config
       - name: Import application and verify health check
         run: python -c "import main; assert main.health_check()['status'] == 'ok'"
       - name: Run deterministic unit tests
