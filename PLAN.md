@@ -45,10 +45,10 @@
 
 ## Phase 3 — Fix backend bugs and contracts
 
-- [ ] Add regression tests, then repair only confirmed bugs: shared unauthenticated mutable state/ID collision, market failure shapes, portfolio-Greeks degradation, simulator date validation status, and documented validation gaps.
-- [ ] Do not rewrite or delete the listed pricing/calculation/market/auth/cloud engines.
-- [ ] Keep single-worker deployment constraints explicit until distributed quote/cache/alert coordination is separately approved.
-- [ ] Preserve or strengthen existing cookies, CSRF, origin checks, rate limits, and ownership checks.
+- [x] Add regression tests, then repair only confirmed bugs: shared unauthenticated mutable state/ID collision, market failure shapes, portfolio-Greeks degradation, simulator date validation status, and documented validation gaps.
+- [x] Do not rewrite or delete the listed pricing/calculation/market/auth/cloud engines.
+- [x] Keep single-worker deployment constraints explicit until distributed quote/cache/alert coordination is separately approved.
+- [x] Preserve or strengthen existing cookies, CSRF, origin checks, rate limits, and ownership checks.
 
 ## Phase 4 — Polish and QA
 

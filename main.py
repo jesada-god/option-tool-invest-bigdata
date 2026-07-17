@@ -400,8 +400,19 @@ MARKET_DATA_TIMEOUT_SECONDS = max(float(os.getenv("MARKET_DATA_TIMEOUT_SECONDS",
 MARKET_DATA_MAX_CONCURRENCY = _read_positive_env_int("MARKET_DATA_MAX_CONCURRENCY", 8)
 market_data_fetch_semaphore = asyncio.Semaphore(MARKET_DATA_MAX_CONCURRENCY)
 
-watchlist = ["NVDA", "AAPL", "TSLA", "AMD"]
-logged_positions = []
+# Auth-disabled deployments retain an ephemeral, per-browser demo workspace.
+# It is process-local by design and is not a substitute for cloud persistence.
+DEMO_SESSION_COOKIE = "pt_demo_session"
+DEMO_WATCHLIST_DEFAULT = ("NVDA", "AAPL", "TSLA", "AMD")
+demo_workspaces: dict[str, dict[str, Any]] = {}
+demo_workspace_lock = threading.RLock()
+
+# Kept only for the un-routed legacy helpers.  Active endpoints exclusively
+# use the caller-scoped workspace above; remove these helpers in a separately
+# versioned cleanup once no external Python integration imports them.
+watchlist = list(DEMO_WATCHLIST_DEFAULT)
+logged_positions: list[dict[str, Any]] = []
+
 # This is a process-local cache used by the existing engines and live quote
 # hub. It is intentionally not user data and must move to Redis when running
 # multiple workers or Render instances.
@@ -428,17 +439,6 @@ alert_evaluation_tasks: set[asyncio.Task[Any]] = set()
 TICKER_PATTERN = re.compile(r"^[A-Z0-9.\-]{1,12}$")
 _alert_evaluation_lock = threading.Lock()
 _alert_evaluation_last_ms: dict[str, int] = {}
-
-
-class PositionModel(BaseModel):
-    ticker: str
-    strike_price: float
-    option_type: str
-    expiration: str
-    premium_paid: float
-    quantity: int
-    iv: float = 0.0 # เพิ่มรองรับ IV
-    delta: float = 0.0 # เพิ่มรองรับ Delta
 
 
 class ValidatedPositionModel(BaseModel):
@@ -814,6 +814,47 @@ def get_cloud_user_or_legacy(request: Request, response: Response, *, mutate: bo
     if mutate:
         verify_csrf(request, auth_settings)
     return user
+
+
+def get_demo_workspace(request: Request, response: Response) -> dict[str, Any]:
+    """Return an isolated browser demo workspace selected by an opaque cookie."""
+    session_id = request.cookies.get(DEMO_SESSION_COOKIE)
+    if not session_id or not re.fullmatch(r"[a-f0-9]{32}", session_id):
+        session_id = uuid.uuid4().hex
+        response.set_cookie(
+            DEMO_SESSION_COOKIE, session_id, httponly=True,
+            secure=get_runtime_auth_settings().secure_cookies, samesite="lax", path="/",
+        )
+    with demo_workspace_lock:
+        return demo_workspaces.setdefault(
+            session_id,
+            {"watchlist": list(DEMO_WATCHLIST_DEFAULT), "positions": [], "next_position_id": 1},
+        )
+
+
+def get_position_source(request: Request, response: Response) -> list[dict[str, Any]]:
+    """Read positions from the caller's workspace, never shared demo globals."""
+    user = get_cloud_user_or_legacy(request, response)
+    if user is None:
+        workspace = get_demo_workspace(request, response)
+        with demo_workspace_lock:
+            return [dict(item) for item in workspace["positions"]]
+    return get_cloud_option_positions(user)
+
+
+def unavailable_stats_payload(ticker: str, message: str) -> dict[str, Any]:
+    """Stable public stats shape for provider failures and timeouts."""
+    return {"ticker": ticker, "current_price": None, "close_price": None, "prev_close": None,
+            "pre_price": None, "post_price": None, "market_session": None, "pe_ratio": None,
+            "market_cap": None, "fair_value": None, "fair_value_upside_pct": None, "volume": None,
+            "iv_rank": None, "call_score": None, "put_score": None, "put_call_ratio": None,
+            "status": "unavailable", "message": message}
+
+
+def unavailable_portfolio_greeks(message: str) -> dict[str, Any]:
+    return {"net_delta": None, "net_gamma": None, "net_theta": None, "net_vega": None,
+            "net_rho": None, "positions": [], "total_capital_at_risk": 0.0,
+            "largest_position_pct": 0.0, "position_count": 0, "status": "unavailable", "message": message}
 
 
 def require_cloud_user(request: Request, response: Response, *, mutate: bool = False) -> CurrentUser:
@@ -2495,7 +2536,9 @@ def tool_allocation(payload: dict[str, Any]):
 def get_watchlist(request: Request, response: Response):
     user = get_cloud_user_or_legacy(request, response)
     if user is None:
-        return list(watchlist)
+        workspace = get_demo_workspace(request, response)
+        with demo_workspace_lock:
+            return list(workspace["watchlist"])
     with session_scope() as session:
         ensure_cloud_workspace(
             session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url
@@ -2507,9 +2550,11 @@ def add_to_watchlist(request: Request, response: Response, ticker: str = Query(.
     ticker = normalize_ticker(ticker)
     user = get_cloud_user_or_legacy(request, response, mutate=True)
     if user is None:
-        if ticker not in watchlist:
-            watchlist.append(ticker)
-        return list(watchlist)
+        workspace = get_demo_workspace(request, response)
+        with demo_workspace_lock:
+            if ticker not in workspace["watchlist"]:
+                workspace["watchlist"].append(ticker)
+            return list(workspace["watchlist"])
     with session_scope() as session:
         ensure_cloud_workspace(
             session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url
@@ -2518,12 +2563,13 @@ def add_to_watchlist(request: Request, response: Response, ticker: str = Query(.
 
 @app.delete("/api/watchlist/{ticker}")
 def remove_from_watchlist(ticker: str, request: Request, response: Response):
-    global watchlist
     ticker = normalize_ticker(ticker)
     user = get_cloud_user_or_legacy(request, response, mutate=True)
     if user is None:
-        watchlist = [t for t in watchlist if t != ticker]
-        return list(watchlist)
+        workspace = get_demo_workspace(request, response)
+        with demo_workspace_lock:
+            workspace["watchlist"][:] = [item for item in workspace["watchlist"] if item != ticker]
+            return list(workspace["watchlist"])
     with session_scope() as session:
         ensure_cloud_workspace(
             session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url
@@ -3149,7 +3195,7 @@ def _get_stats(ticker: str = "NVDA"):
         raise
     except Exception as exc:
         logger.exception("Stats endpoint failed for %s", ticker)
-        return {"success": True, "data": [], "message": "No market data available"}
+        return unavailable_stats_payload(ticker, "No market data available")
 
 
 @app.get("/api/stats")
@@ -3159,7 +3205,7 @@ async def get_stats(ticker: str = "NVDA"):
         return await run_bounded_market_call(_get_stats, ticker)
     except (asyncio.TimeoutError, TimeoutError):
         logger.warning("Stats request timed out for %s", ticker)
-        return {"success": True, "data": [], "message": "Market data request timed out"}
+        return unavailable_stats_payload(normalize_ticker(ticker), "Market data request timed out")
 
 
 def _get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step: Optional[float] = None):
@@ -3271,7 +3317,8 @@ async def get_indicators(ticker: str = "NVDA", timeframe: str = "1d", psych_step
 
 def _get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
     ticker = normalize_ticker(ticker)
-    unavailable = {"success": True, "data": [], "message": "No market data available"}
+    # The chart contract is always a candle array, including provider failure.
+    unavailable: list[dict[str, Any]] = []
     try:
         cfg = TIMEFRAME_CONFIG.get(timeframe, TIMEFRAME_CONFIG["1d"])
         hist = get_raw_history(ticker, timeframe)
@@ -3311,7 +3358,7 @@ async def get_chart_data(ticker: str = "NVDA", timeframe: str = "1d"):
         return await run_bounded_market_call(_get_chart_data, ticker, timeframe)
     except (asyncio.TimeoutError, TimeoutError):
         logger.warning("Chart request timed out for %s", ticker)
-        return {"success": True, "data": [], "message": "Market data request timed out"}
+        return []
 
 # 👜 Smart Option Pocket Endpoints
 # ---------------------------------------------------------------------------
@@ -3638,11 +3685,10 @@ def get_cloud_option_positions(user: CurrentUser) -> list[dict[str, Any]]:
 def get_positions(request: Request, response: Response):
     user = get_cloud_user_or_legacy(request, response)
     if user is None:
-        enriched_positions = [enrich_option_position(item) for item in logged_positions]
-        # Retain legacy in-memory behaviour, while cloud records remain
-        # unchanged by a read-only valuation request.
-        for stored, enriched in zip(logged_positions, enriched_positions):
-            stored.update(enriched)
+        workspace = get_demo_workspace(request, response)
+        with demo_workspace_lock:
+            position_source = [dict(item) for item in workspace["positions"]]
+        enriched_positions = [enrich_option_position(item) for item in position_source]
         return sanitize_json(enriched_positions)
     positions = [enrich_option_position(item) for item in get_cloud_option_positions(user)]
     logger.debug("Portfolio read user=%s open_positions=%d", user.id, len(positions))
@@ -3661,14 +3707,13 @@ def add_position(pos: ValidatedPositionModel, request: Request, response: Respon
         logger.warning("Opening position without entry quote ticker=%s: %s", pos.ticker, exc)
         entry_price = 0.0
     if user is None:
-        new_pos = pos.model_dump()
-        new_pos.update({
-            "id": random.randint(1000, 9999),
-            "entry_underlying_price": entry_price,
-            "pnl": 0.0,
-            "pnl_percent": 0.0,
-        })
-        logged_positions.append(new_pos)
+        workspace = get_demo_workspace(request, response)
+        with demo_workspace_lock:
+            new_pos = pos.model_dump()
+            new_pos.update({"id": workspace["next_position_id"], "entry_underlying_price": entry_price,
+                            "pnl": 0.0, "pnl_percent": 0.0})
+            workspace["next_position_id"] += 1
+            workspace["positions"].append(new_pos)
     else:
         try:
             with session_scope() as session:
@@ -3707,11 +3752,13 @@ def update_position(pos_id: int, payload: PositionUpdateModel, request: Request,
     """Edit an open contract and return its immediately revalued representation."""
     user = get_cloud_user_or_legacy(request, response, mutate=True)
     if user is None:
-        position = next((item for item in logged_positions if item["id"] == pos_id), None)
-        if position is None:
-            raise HTTPException(status_code=404, detail="Position not found.")
-        position.update(payload.model_dump())
-        updated = position
+        workspace = get_demo_workspace(request, response)
+        with demo_workspace_lock:
+            position = next((item for item in workspace["positions"] if item["id"] == pos_id), None)
+            if position is None:
+                raise HTTPException(status_code=404, detail="Position not found.")
+            position.update(payload.model_dump())
+            updated = dict(position)
     else:
         with session_scope() as session:
             ensure_cloud_workspace(session, profile_id=user.id, email=user.email, avatar_url=user.avatar_url)
@@ -3736,14 +3783,15 @@ def update_position(pos_id: int, payload: PositionUpdateModel, request: Request,
 
 @app.delete("/api/positions/{pos_id}")
 def close_position(pos_id: int, request: Request, response: Response):
-    global logged_positions
     user = get_cloud_user_or_legacy(request, response, mutate=True)
     if user is None:
-        position = next((item for item in logged_positions if item["id"] == pos_id), None)
-        if position is None:
-            raise HTTPException(status_code=404, detail="Position not found.")
-        marked = enrich_option_position(position)
-        logged_positions = [item for item in logged_positions if item["id"] != pos_id]
+        workspace = get_demo_workspace(request, response)
+        with demo_workspace_lock:
+            position = next((item for item in workspace["positions"] if item["id"] == pos_id), None)
+            if position is None:
+                raise HTTPException(status_code=404, detail="Position not found.")
+            marked = enrich_option_position(dict(position))
+            workspace["positions"][:] = [item for item in workspace["positions"] if item["id"] != pos_id]
     else:
         with session_scope() as session:
             ensure_cloud_workspace(
@@ -3815,7 +3863,10 @@ def simulate_option(data: SimulatorModel):
         # คำนวณวันหมดอายุ และจำนวนวันที่เหลือจนถึงเป้าหมาย
         days_to_exp = (data.expiration - data.target_date).days
         if days_to_exp < 0:
-            return {"error": "วันที่ตั้งเป้าหมาย ต้องไม่เกินวันหมดอายุของสัญญา!"}
+            raise HTTPException(
+                status_code=422,
+                detail="Target date must not be after the option expiration.",
+            )
 
         T = days_to_exp / 365.0
         r = 0.05 # กำหนด Risk-free rate ที่ 5%
@@ -3900,8 +3951,7 @@ def get_gauges(
         # Gauges are public analysis.  Cloud storage is optional enrichment
         # for portfolio Greeks, not a prerequisite for rendering the suite.
         try:
-            user = get_cloud_user_or_legacy(request, response)
-            position_source = logged_positions if user is None else get_cloud_option_positions(user)
+            position_source = get_position_source(request, response)
         except HTTPException as exc:
             logger.info("Gauge portfolio context unavailable for %s: %s", ticker, exc.detail)
             position_source = []
@@ -4061,10 +4111,17 @@ def simulate_advanced(req: AdvancedSimulateRequest):
 
 @app.get("/api/portfolio/greeks")
 def get_portfolio_greeks(request: Request, response: Response):
-    user = get_cloud_user_or_legacy(request, response)
-    position_source = logged_positions if user is None else get_cloud_option_positions(user)
-    pg = portfolio_engine.compute_portfolio_greeks(position_source, get_underlying_price=get_base_price)
-    return pg
+    position_source = get_position_source(request, response)
+    try:
+        return portfolio_engine.compute_portfolio_greeks(
+            position_source, get_underlying_price=get_base_price
+        )
+    except Exception as exc:
+        # Quote failures must not erase an otherwise readable portfolio.
+        logger.warning("Portfolio Greeks unavailable: %s", exc)
+        return unavailable_portfolio_greeks(
+            "Portfolio quote data is temporarily unavailable."
+        )
 
 
 @app.get("/api/debug/yfinance", include_in_schema=False)

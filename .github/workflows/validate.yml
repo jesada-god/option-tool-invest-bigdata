@@ -63,3 +63,4 @@ jobs:
         run: npm run test:frontend
       - name: Lint and syntax-check frontend sources
         run: node scripts/check_frontend.cjs
+        
