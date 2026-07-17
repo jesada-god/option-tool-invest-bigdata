@@ -1,0 +1,1 @@
+export function CircleActionButton({ label, onClick }: { label: string; onClick?: () => void }) { return <button className="action" aria-label={label} title={label} onClick={onClick}>{label.slice(0, 1)}</button>; }

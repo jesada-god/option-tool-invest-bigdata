@@ -3,12 +3,10 @@
 services:
   - type: web
     name: quantora-ai
-    runtime: python
+    runtime: docker
     region: singapore
     plan: free
     numInstances: 1
-    buildCommand: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
-    startCommand: sh scripts/start-render.sh
     healthCheckPath: /healthz
     autoDeployTrigger: checksPass
     envVars:

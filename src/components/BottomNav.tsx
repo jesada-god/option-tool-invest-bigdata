@@ -1,0 +1,2 @@
+import { Link } from 'react-router-dom';
+export function BottomNav({ openSearch }: { openSearch: () => void }) { return <nav className="bottom-nav" aria-label="Mobile navigation"><Link to="/">Home</Link><Link to="/watchlist">Markets</Link><button className="action center" onClick={openSearch} aria-label="Search">⌕</button><Link to="/portfolio">Portfolio</Link><Link to="/account">More</Link></nav>; }

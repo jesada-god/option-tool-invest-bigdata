@@ -1,0 +1,6 @@
+export class ApiError extends Error { constructor(public status: number, message: string) { super(message); } }
+function csrf() { return document.cookie.split('; ').find(v => v.startsWith('pt_csrf='))?.split('=')[1]; }
+export async function api<T>(path: string, init: RequestInit = {}): Promise<T> { const headers = new Headers(init.headers); const mutation = !['GET', 'HEAD'].includes((init.method || 'GET').toUpperCase()); if (mutation) { headers.set('Content-Type', 'application/json'); const token = csrf(); if (token) headers.set('X-CSRF-Token', token); } const response = await fetch(path, { ...init, headers, credentials: 'same-origin' }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new ApiError(response.status, body.detail || body.message || `Request failed (${response.status})`); return body as T; }
+export const money = (value: unknown, currency = 'USD') => typeof value === 'number' ? new Intl.NumberFormat(undefined, { style: 'currency', currency, maximumFractionDigits: 2 }).format(value) : '—';
+export const message = (error: unknown) => error instanceof ApiError && error.status === 503 && /cloud|database|persistence/i.test(error.message) ? 'ฟีเจอร์นี้ต้องเปิด cloud sync' : error instanceof Error ? error.message : 'Unable to reach the service.';
+export const cloudFeatureMessage = message;

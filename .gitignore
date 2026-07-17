@@ -22,6 +22,8 @@ htmlcov/
 .vscode/
 .idea/
 *.log
+node_modules/
+dist/
 
 # Operating-system files
 .DS_Store

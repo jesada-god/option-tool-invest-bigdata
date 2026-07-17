@@ -1,0 +1,2 @@
+import { useState } from 'react';
+export function NumericKeypad({ label = 'Amount' }: { label?: string }) { const [value, setValue] = useState(''); return <section className="card"><label>{label}<input aria-label={label} inputMode="decimal" value={value} onChange={event => setValue(event.target.value)} /></label><div className="keypad">{'123456789.0⌫'.split('').map(key => <button type="button" key={key} onClick={() => setValue(v => key === '⌫' ? v.slice(0, -1) : v + key)}>{key}</button>)}</div><p className="muted">Keyboard entry is also supported.</p></section>; }

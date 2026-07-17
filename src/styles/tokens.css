@@ -1,0 +1,5 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root { --color-bg-base: #080C18; --color-surface-card: #1F212E; --color-accent-lime: #C1FF16; --gradient-accent-lime-soft: linear-gradient(135deg, #C7F091 0%, #DEF6A8 100%); --color-text-muted: #9BA9C3; --color-danger: #FF6B72; --color-text: #F4F7FF; --color-sidebar: #0D1222; --color-control: #303447; --color-control-border: #4B5169; --color-on-accent: #111111; --color-overlay: #00000099; --color-shadow: #00000088; --radius-card: 24px; --radius-pill: 999px; }

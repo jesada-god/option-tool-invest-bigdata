@@ -1,0 +1,2 @@
+export function Sparkline() { return <svg className="sparkline" viewBox="0 0 70 28" aria-label="Price trend"><path d="M1 22 L15 16 L28 20 L43 8 L56 12 L69 3" strokeWidth="2" /></svg>; }
+export function AssetRow({ symbol = '—', name = 'No asset selected', price = '—' }: { symbol?: string; name?: string; price?: string }) { return <div className="row"><span className="avatar">{symbol.slice(0, 1)}</span><div className="row-copy"><strong>{symbol}</strong><div className="muted">{name}</div></div><div>{price}</div><Sparkline /></div>; }

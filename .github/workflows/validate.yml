@@ -22,7 +22,7 @@ jobs:
         run: |
           python -m compileall -q .
           python scripts/check_python_quality.py
-          python scripts/validate_production_config.py
+          python -m scripts.validate_production_config
       - name: Import application and verify health check
         run: python -c "import main; assert main.health_check()['status'] == 'ok'"
       - name: Run deterministic unit tests
@@ -55,7 +55,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Build Vite frontend
+        run: npm run build
       - name: Run frontend unit and route smoke tests
-        run: node --test tests/frontend/*.test.cjs
+        run: npm run test:frontend
       - name: Lint and syntax-check frontend sources
         run: node scripts/check_frontend.cjs
+        
