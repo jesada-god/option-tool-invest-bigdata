@@ -1,0 +1,15 @@
+[33m341772d[m[33m ([m[1;36mHEAD[m[33m -> [m[1;32mredesign/multipage-ui[m[33m)[m feat(shell): add global API search overlay
+[33mf3d031f[m feat(account): connect workspace settings
+[33m14af2f9[m feat(alerts): bind rules and inbox
+[33m8c7071b[m feat(tools): connect calculator desk
+[33m4eade20[m feat(portfolio): show holdings positions and Greeks
+[33m50aad5b[m feat(analysis): add live research workbench
+[33mb075554[m feat(watchlist): connect named lists and live quotes
+[33m3d8cd84[m feat(home): bind dashboard to workspace APIs
+[33m2a615bb[m[33m ([m[1;31morigin/main[m[33m, [m[1;32mmain[m[33m)[m Quantora Update 2.1
+[33mb2e5ad6[m Quantora Update 2.0
+[33m09b8093[m Quantora Update 1.9
+[33m852dd7f[m Quantora Update 1.8
+[33m8ecb4c0[m Quantora update 1.7
+[33m20ee5c9[m Fix direct watchlist bootstrap and refresh shell assets
+[33mdebe38c[m Quantora update 1.6

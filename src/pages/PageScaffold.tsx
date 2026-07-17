@@ -1,0 +1,1 @@
+import { ReactNode } from 'react'; export function PageScaffold({ title, description, children }: { title: string; description: string; children?: ReactNode }) { return <article className="page"><h1>{title}</h1><p className="muted">{description}</p>{children}</article>; }

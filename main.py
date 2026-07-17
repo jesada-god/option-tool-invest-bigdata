@@ -1,6 +1,7 @@
 from fastapi import FastAPI, Request, Response, WebSocket, WebSocketDisconnect, HTTPException, Query
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, RedirectResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from fastapi.encoders import jsonable_encoder
 from starlette.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -177,14 +178,13 @@ from app.repositories import ProfileRepository
 from app.models import Favorite, RecentViewed, SearchHistory, SimulationHistory
 
 BASE_DIR = Path(__file__).resolve().parent
-INDEX_FILE = BASE_DIR / "index.html"
+DIST_DIR = BASE_DIR / "dist"
+INDEX_FILE = DIST_DIR / "index.html"
 MANIFEST_FILE = BASE_DIR / "app.webmanifest"
 SERVICE_WORKER_FILE = BASE_DIR / "service-worker.js"
-FRONTEND_ROUTE_DIR = BASE_DIR / "frontend" / "routes"
-FRONTEND_ROUTE_MODULES = frozenset({"home", "watchlist", "analysis", "tools", "portfolio", "search"})
-FRONTEND_DIR = BASE_DIR / "frontend"
 
 app = FastAPI()
+app.mount("/assets", StaticFiles(directory=DIST_DIR / "assets", check_dir=False), name="frontend-assets")
 # index.html and the chart library are large text payloads. Compression is
 # negotiated by the client and keeps the uncompressed response untouched for
 # clients that do not support it.
@@ -1620,37 +1620,6 @@ async def serve_service_worker():
         SERVICE_WORKER_FILE,
         media_type="application/javascript",
         headers={"Cache-Control": "no-cache"},
-    )
-
-
-@app.get("/assets/routes/{route_name}.js", include_in_schema=False)
-async def serve_route_module(route_name: str):
-    """Serve an allow-listed native ES-module route chunk."""
-
-    if route_name not in FRONTEND_ROUTE_MODULES:
-        raise HTTPException(status_code=404, detail="Frontend route module not found.")
-    return FileResponse(
-        FRONTEND_ROUTE_DIR / f"{route_name}.js",
-        media_type="application/javascript",
-        headers={"Cache-Control": "public, max-age=300"},
-    )
-
-
-@app.get("/assets/{asset_path:path}", include_in_schema=False)
-async def serve_frontend_asset(asset_path: str):
-    """Serve frontend chunks without exposing paths outside frontend/."""
-
-    requested = (FRONTEND_DIR / asset_path).resolve()
-    try:
-        requested.relative_to(FRONTEND_DIR.resolve())
-    except ValueError:
-        raise HTTPException(status_code=404, detail="Frontend asset not found.")
-    if requested.suffix != ".js" or not requested.is_file():
-        raise HTTPException(status_code=404, detail="Frontend asset not found.")
-    return FileResponse(
-        requested,
-        media_type="application/javascript",
-        headers={"Cache-Control": "public, max-age=300"},
     )
 
 
@@ -4142,6 +4111,15 @@ def cache_clear(request: Request):
     require_operational_access(request)
     clear_all_cache()
     return {"status": "cleared"}
+
+
+@app.get("/{frontend_path:path}", include_in_schema=False)
+async def serve_frontend_application(frontend_path: str):
+    """Serve the Vite SPA for direct links while API routes keep their order."""
+
+    if not INDEX_FILE.is_file():
+        raise HTTPException(status_code=503, detail="Frontend build is unavailable.")
+    return FileResponse(INDEX_FILE, headers={"Cache-Control": "no-cache"})
 
 
 if __name__ == "__main__":

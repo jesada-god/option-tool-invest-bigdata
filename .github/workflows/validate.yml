@@ -55,7 +55,11 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
+      - name: Install locked frontend dependencies
+        run: npm ci
+      - name: Build Vite frontend
+        run: npm run build
       - name: Run frontend unit and route smoke tests
-        run: node --test tests/frontend/*.test.cjs
+        run: npm run test:frontend
       - name: Lint and syntax-check frontend sources
         run: node scripts/check_frontend.cjs
