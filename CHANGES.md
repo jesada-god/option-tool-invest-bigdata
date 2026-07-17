@@ -43,3 +43,33 @@
 - สาเหตุ: เป็น model จาก implementation เดิมที่ยังเหลือหลัง endpoint ย้ายไปใช้ validated model.
 - วิธีแก้: ลบ model ที่ไม่ได้ใช้งาน โดยคง `ValidatedPositionModel`, `PositionUpdateModel` และทุก decorated API route ไว้.
 - ผลกระทบ: ลดจุดที่ schema อาจ drift โดยไม่ตัด endpoint, portfolio/pricing engine หรือ validation ของ position ที่ใช้งานจริง.
+
+# Phase 4 QA and frontend polish
+
+### Live quote reconnect
+
+- Added a shared browser WebSocket lifecycle for Watchlist and Analysis: exponential retry (1–15 seconds), online/offline handling, sequence-safe quote updates, and cleanup on route changes.
+- Both views now show Live, Stale quote, Reconnecting, or Disconnected explicitly. A reconnect resumes without a page refresh after the server/network returns.
+
+## 2026-07-17
+
+### Route-level code splitting
+
+- ปัญหา: React app import ทุก page เข้า initial bundle แม้ผู้ใช้เปิดเพียง route เดียว.
+- สาเหตุ: `App.tsx` ใช้ static imports สำหรับทั้งเจ็ด pages.
+- วิธีแก้: เปลี่ยนเป็น `React.lazy` พร้อม `Suspense` loading state และเพิ่ม frontend smoke test ที่ยืนยัน lazy import ของทุก page.
+- ผลกระทบ: Vite สร้าง chunk แยกสำหรับ Home, Watchlist, Analysis, Portfolio, Tools, Alerts และ Account; successful routes และ API contracts เดิมไม่เปลี่ยน.
+
+### Keyboard focus and search dialog accessibility
+
+- ปัญหา: ไม่มี focus indicator ที่กำหนดชัดเจน, ไม่มี skip link และ Search dialog ไม่มี focus trap/focus restore.
+- สาเหตุ: shell เริ่มต้นเน้นโครงสร้าง visual โดยยังไม่มี keyboard contract ครบ.
+- วิธีแก้: เพิ่ม `:focus-visible`, skip-to-content link, dialog focus trap, Escape close, focus restore, listbox/option semantics และ accessible active result; เพิ่ม label ให้ profile input และกำหนด keypad buttons เป็น non-submit buttons.
+- ผลกระทบ: keyboard users ข้าม navigation ได้ เห็น focus ชัดเจน และเปิด/ปิด Search โดยไม่ทำ focus หาย โดยไม่เปลี่ยน cookie, CSRF หรือ API authentication flow.
+
+### Frontend documentation
+
+- ปัญหา: README ยังอธิบาย navigation/auth UI ใน `index.html` แบบเก่า และไม่ได้ระบุว่าต้อง build Vite ก่อน FastAPI serve frontend.
+- สาเหตุ: เอกสารไม่ได้ถูกปรับหลังย้ายเป็น React SPA.
+- วิธีแก้: อธิบาย Vite/React routing, `src/` layout, lazy chunks, same-origin local build/run และ demo workspace รายเบราว์เซอร์ให้ตรง implementation ปัจจุบัน.
+- ผลกระทบ: ขั้นตอน local/production และข้อจำกัด single-worker ตรงกับ build ที่ deploy จริง ลดความเสี่ยง serve SPA โดยไม่มี `dist/`.

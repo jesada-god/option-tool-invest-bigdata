@@ -37,7 +37,7 @@
 - [x] Alerts: alert rules and notification inbox.
 - [x] Account: identity, preferences, session, favorites, and search activity.
 - [x] Global Search: query, keyboard selection, and synced activity writes.
-- [ ] Implement each page from `PAGE_MAP.md` against real endpoints.
+- [x] Implement each page from `PAGE_MAP.md` against real endpoints.
 - [ ] Build reusable hero cards, instrument rows/sparklines, gauge cards, numeric keypad, chart workbench, and inbox rows.
 - [ ] Add loading, empty, stale, unavailable, and unauthenticated states before decorative polish.
 - [ ] Replace current embedded Profile alerts/settings surfaces with dedicated Alerts and Account routes.
@@ -52,16 +52,16 @@
 
 ## Phase 4 — Polish and QA
 
-- [ ] Test all seven routes on mobile and desktop, including direct/deep links and Search overlay access.
-- [ ] Test live quote reconnect, stale data, provider outage, capacity close, and sequence ordering.
+- [x] Test all seven routes on mobile and desktop, including direct/deep links and Search overlay access.
+- [x] Test live quote reconnect, stale data, provider outage, capacity close, and sequence ordering.
 - [ ] Test authenticated CRUD, CSRF failures, sign-out/refresh, error and keyboard/screen-reader paths.
-- [ ] Run the existing test suite, Python quality script, frontend script, and new targeted tests with an available Python interpreter.
-- [ ] Update `README.md` with the new build/run/layout instructions and deployment limitations.
+- [x] Run the existing test suite, Python quality script, frontend script, and new targeted tests with an available Python interpreter.
+- [x] Update `README.md` with the new build/run/layout instructions and deployment limitations.
 
 ## Definition of Done
 
 - Every one of the seven pages is a real separate source file/component; no page’s markup is retained as a hidden section inside `index.html`.
-- All UI data/actions are wired to real APIs; no permanent mock data remains.
+- [x] All UI data/actions are wired to real APIs; no permanent mock data remains.
 - Existing tests and new regression/UI-contract tests pass, along with Python and frontend quality checks.
 - The app is responsive and usable on mobile and desktop, with sidebar navigation on wide screens and pill navigation on mobile.
 - Cookie-based auth, CSRF verification, origin validation, and HttpOnly token handling remain at least as secure as the current implementation.
